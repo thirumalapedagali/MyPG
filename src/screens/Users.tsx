@@ -137,12 +137,12 @@ export default function Users() {
         fields={[
           { key: 'username', label: 'Username' },
           { key: 'mobile', label: 'Mobile (10-15 digits)', keyboard: 'phone-pad' },
-          { key: 'password', label: 'Temporary password (min 8 characters)', secure: true },
+          { key: 'password', label: 'Temporary password (min 4 characters)', secure: true },
         ]}
         onClose={reset}
         onSubmit={async (v) => {
-          if (v.password.length < 8) {
-            Alert.alert('Too short', 'Use at least 8 characters.');
+          if (v.password.length < 4) {
+            Alert.alert('Too short', 'Use at least 4 characters.');
             return false;
           }
           const body = { username: v.username, mobile: v.mobile, password: v.password, role, residentId };
@@ -155,11 +155,11 @@ export default function Users() {
       <FormModal
         visible={resetFor !== null}
         title={`Reset password · ${resetFor?.username ?? ''}`}
-        fields={[{ key: 'password', label: 'New temporary password (min 8 characters)', secure: true }]}
+        fields={[{ key: 'password', label: 'New temporary password (min 4 characters)', secure: true }]}
         onClose={() => setResetFor(null)}
         onSubmit={async (v) => {
-          if (v.password.length < 8) {
-            Alert.alert('Too short', 'Use at least 8 characters.');
+          if (v.password.length < 4) {
+            Alert.alert('Too short', 'Use at least 4 characters.');
             return false;
           }
           if (!(await attempt(() => put(`/api/users/${resetFor!.id}`, { newPassword: v.password })))) return false;

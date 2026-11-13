@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import { del, get, post, qs } from '../api';
 import { attempt, useResource } from '../hooks';
+import { EXPENSE_TYPE, useLookup } from '../lookups';
 import { Expense, ExpenseCategory, Paged, Totals } from '../types';
 import { Badge, Card, Chips, Empty, FormModal, HeaderAction, Screen, SearchInput, Stat, colors, s } from '../ui';
 import { PRESETS, Preset, isDate, money, presetRange, today } from '../utils';
@@ -10,12 +11,19 @@ import { PRESETS, Preset, isDate, money, presetRange, today } from '../utils';
 const ALL = 'All categories';
 const PAGE = 100;
 
-export default function Expenses() {
+export default function Expenses({ addSignal }: { addSignal?: number }) {
   const [preset, setPreset] = useState<Preset>('This Month');
   const [category, setCategory] = useState(ALL);
   const [search, setSearch] = useState('');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  // Dashboard quick action: a new signal value opens the add-expense form.
+  const [seenAdd, setSeenAdd] = useState<number | undefined>(undefined);
+  if (addSignal !== seenAdd) {
+    setSeenAdd(addSignal);
+    if (addSignal != null) setOpen(true);
+  }
+
 
   // Debounce typing so we don't query on every keystroke.
   useEffect(() => {
@@ -33,7 +41,10 @@ export default function Expenses() {
     return { list, summary, cats };
   }, [preset, category, q]);
 
-  const categories = [ALL, ...(data?.cats ?? []).map((c) => c.name)];
+  // Categories come from the EXPENSE_TYPE lookup (lookup_values). Until that has rows, the property's own list is used.
+  const expenseTypes = useLookup(EXPENSE_TYPE);
+  const names = [...new Set((expenseTypes.length ? expenseTypes.map((t) => t.label) : (data?.cats ?? []).map((c) => c.name)))];
+  const categories = [ALL, ...names];
   const list = data?.list.content ?? [];
   const listTotal = list.reduce((n, e) => n + e.amount, 0);
 
@@ -104,27 +115,58 @@ export default function Expenses() {
           ))}
         </>
       )}
-      <FormModal
+      <AddExpenseModal
         visible={open}
-        title="Add expense"
-        fields={[
-          { key: 'title', label: 'Description (e.g. April electricity bill)' },
-          { key: 'category', label: `Category (${(data?.cats ?? []).slice(0, 4).map((c) => c.name).join(', ') || 'Electricity, Water…'})` },
-          { key: 'amount', label: 'Amount (₹)', keyboard: 'number-pad' },
-          { key: 'date', label: 'Date (YYYY-MM-DD)', initial: today() },
-        ]}
         onClose={() => setOpen(false)}
-        onSubmit={async (v) => {
-          const amount = parseFloat(v.amount);
-          if (!(amount > 0) || !isDate(v.date)) {
-            Alert.alert('Invalid', 'Check amount and date.');
-            return false;
-          }
-          if (!(await attempt(() => post('/api/expenses', { title: v.title, category: v.category, amount, date: v.date })))) return false;
+        onCreated={() => {
           setOpen(false);
           reload();
         }}
+        presetCategories={names}
       />
     </Screen>
+  );
+}
+
+export function AddExpenseModal({
+  visible,
+  onClose,
+  onCreated,
+  presetCategories,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+  presetCategories?: string[];
+}) {
+  const { data } = useResource(async () => {
+    if (presetCategories && presetCategories.length > 0) return presetCategories;
+    const cats = await get<ExpenseCategory[]>('/api/master/expenses');
+    return cats.map((c) => c.name);
+  });
+  const names = data ?? presetCategories ?? [];
+  const options = names.map((n) => ({ code: n, label: n }));
+
+  return (
+    <FormModal
+      visible={visible}
+      title="Add expense"
+      fields={[
+        { key: 'amount', label: 'Amount (₹)', keyboard: 'number-pad' },
+        { key: 'category', label: 'Category', options, initial: options[0]?.code },
+        { key: 'title', label: 'Description (e.g. April electricity bill)' },
+        { key: 'date', label: 'Date', initial: today(), date: true },
+      ]}
+      onClose={onClose}
+      onSubmit={async (v) => {
+        const amount = parseFloat(v.amount);
+        if (!(amount > 0) || !isDate(v.date)) {
+          Alert.alert('Invalid', 'Check amount and date.');
+          return false;
+        }
+        if (!(await attempt(() => post('/api/expenses', { title: v.title, category: v.category, amount, date: v.date })))) return false;
+        onCreated();
+      }}
+    />
   );
 }

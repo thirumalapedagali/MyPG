@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { onSessionExpired, post, put, tokenStore } from './api';
+import { unregisterFromPush } from './push';
 import { LoginResponse, User } from './types';
 
 const USER_KEY = 'mypg-user';
@@ -9,9 +10,12 @@ type Auth = {
   ready: boolean;
   user: User | null;
   login: (username: string, password: string) => Promise<void>;
-  register: (name: string, mobile: string, password: string, email?: string) => Promise<void>;
-  /** Super admin: work inside the chosen PG. */
+  /** Super admin / owner: work inside the chosen PG. */
   selectPg: (pgId: number) => Promise<void>;
+  /** Super admin: leave the current PG and return to the admin console. */
+  exitPg: () => Promise<void>;
+  /** Owner: show the consolidated figures of all their properties. */
+  viewAllProperties: () => Promise<void>;
   changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -63,26 +67,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await tokenStore.set(res.token);
         await persist(toUser(res));
       },
-      register: async (name, mobile, password, email) => {
-        const res = await post<LoginResponse>(
-          '/api/auth/register',
-          { name: name.trim(), mobile: mobile.trim(), password, email: email?.trim() || null },
-          { auth: false }
-        );
-        await tokenStore.set(res.token);
-        await persist(toUser(res));
-      },
       selectPg: async (pgId) => {
         const res = await post<LoginResponse>('/api/auth/select-pg', { pgId });
         await tokenStore.set(res.token);
         await persist(toUser(res));
+      },
+      exitPg: async () => {
+        const res = await post<LoginResponse>('/api/auth/exit-pg');
+        await tokenStore.set(res.token);
+        await persist(toUser(res));
+      },
+      viewAllProperties: async () => {
+        if (user) await persist({ ...user, allProperties: true });
       },
       changePassword: async (oldPassword, newPassword) => {
         await put('/api/auth/change-password', { oldPassword, newPassword });
         if (user) await persist({ ...user, mustChangePassword: false });
       },
       logout: async () => {
-        // Tokens are stateless on the server; dropping ours is the logout.
+        // Tokens are stateless on the server; dropping ours is the logout. Stop pushes for this phone first, while we can still call the API.
+        if (!user || user.pgId == null) {
+          await unregisterFromPush();
+        }
         await tokenStore.clear();
         await persist(null);
       },

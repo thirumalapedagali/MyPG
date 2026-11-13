@@ -1,6 +1,7 @@
 import React from 'react';
 import { Text, View } from 'react-native';
 import { get } from '../api';
+import { useAuth } from '../auth';
 import { useResource } from '../hooks';
 import { Summary } from '../types';
 import { Card, Screen, Section, Stat, colors, s } from '../ui';
@@ -8,7 +9,11 @@ import { money, monthLabel } from '../utils';
 
 /** Business overview — same layout as AgroMobileApp: Collections, Expenses, Net Profit, each by period. */
 export default function Overview() {
-  const { data, error, loading, refreshing, refresh } = useResource(() => get<Summary>('/api/dashboard/summary'));
+  const { user } = useAuth();
+  const all = !!user?.allProperties;
+  const { data, error, loading, refreshing, refresh } = useResource(() =>
+    get<Summary>(all ? '/api/dashboard/summary?scope=all' : '/api/dashboard/summary'),
+  );
   const now = new Date();
   const monthName = now.toLocaleString('en-IN', { month: 'long' });
   const year = String(now.getFullYear());
@@ -48,7 +53,11 @@ function Body({
 
   return (
     <>
-      <Text style={[s.muted, { marginBottom: 10 }]}>All-time analytics across collections, expenses & profit</Text>
+      <Text style={[s.muted, { marginBottom: 10 }]}>
+        {data.properties
+          ? `All-time analytics across all ${data.properties.length} properties`
+          : 'All-time analytics across collections, expenses & profit'}
+      </Text>
 
       <Section title="Collections" icon="cash-outline" color={colors.primary}>
         <Stat icon="server-outline" label="Total Collected" value={money(inc.total)} sub="All time" />

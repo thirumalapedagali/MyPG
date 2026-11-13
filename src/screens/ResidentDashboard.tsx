@@ -14,9 +14,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { get, post } from '../api';
+import { del, get, post } from '../api';
 import { useAuth } from '../auth';
 import { attempt, useResource } from '../hooks';
+import { COMPLAINT_CATEGORY, useLookup } from '../lookups';
 import { ResidentStorage } from '../residentService';
 import {
   AttendanceRecord,
@@ -27,15 +28,23 @@ import {
   MealPreference,
   MyDuesData,
   PgDocument,
-  PgNotice,
+  SupportContact,
   VisitorPass,
 } from '../types';
-import { Avatar, Badge, Card, HeaderAction, Screen, colors, s } from '../ui';
-import { isDate, money, today } from '../utils';
+import { DateField } from '../dateField';
+import { Avatar, Badge, Card, FormModal, Screen, colors, s } from '../ui';
+import { isDate, money, today, ymd } from '../utils';
+
+/** Earliest leaving date the server accepts: 30 days from now. */
+const NOTICE_DAYS = 30;
+const earliestLeave = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + NOTICE_DAYS);
+  return ymd(d);
+};
 
 type ActiveModal =
   | null
-  | 'PAYMENTS'
   | 'COMPLAINTS'
   | 'NEW_COMPLAINT'
   | 'FOOD'
@@ -45,27 +54,32 @@ type ActiveModal =
   | 'LEAVE'
   | 'NEW_LEAVE'
   | 'ROOM'
-  | 'NOTICES'
   | 'DOCUMENTS'
-  | 'SUPPORT'
-  | 'RECEIPT';
+  | 'NOTICE'
+  | 'SUPPORT';
 
 export default function ResidentDashboard({ navigation }: { navigation?: any }) {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const { data, error, loading, refreshing, refresh } = useResource(() => get<MyDuesData>('/api/me/dues'));
   const me = data?.resident;
   const pg = data?.pg;
 
   // Active sub-module modal
   const [activeModal, setActiveModal] = useState<ActiveModal>(null);
-  const [selectedReceipt, setSelectedReceipt] = useState<any>(null);
+
+  // Contacts the owner chose to share under Support & Helpline.
+  const supportContacts = useResource(() => get<SupportContact[]>('/api/support-contacts')).data ?? [];
+
+  // Complaints live on the server so the owner / manager can see and resolve them.
+  const complaintsRes = useResource(() => get<Complaint[]>('/api/me/complaints'));
+  const complaints = complaintsRes.data ?? [];
+  const updatedComplaints = complaints.filter((c) => !c.residentSeen).length;
+  const categories = useLookup(COMPLAINT_CATEGORY);
 
   // Module state
-  const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [visitors, setVisitors] = useState<VisitorPass[]>([]);
   const [leaves, setLeaves] = useState<LeaveApplication[]>([]);
-  const [notices, setNotices] = useState<PgNotice[]>([]);
   const [documents, setDocuments] = useState<PgDocument[]>([]);
   const [mealPrefs, setMealPrefs] = useState<MealPreference>({
     dietType: 'VEG',
@@ -75,21 +89,24 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
   });
   const weeklyMenu: FoodMenu[] = ResidentStorage.getWeeklyMenu();
   const todayDayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()];
-  const todayMenu = weeklyMenu.find((m) => m.day === todayDayName) || weeklyMenu[0];
 
-  // Forms
-  const [payAmount, setPayAmount] = useState('');
-  const [utrNumber, setUtrNumber] = useState('');
-  const [payDate, setPayDate] = useState(today());
-  const [payNotes, setPayNotes] = useState('');
-  const [submittingPayment, setSubmittingPayment] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
+
+  // Notice board: the property's rules. They rarely change, so ResidentStorage keeps a copy on the device.
+  const [rules, setRules] = useState<string | null>(null);
+  const openNoticeBoard = () => {
+    setActiveModal('NOTICE');
+    ResidentStorage.getRules(pg?.id).then(setRules);
+  };
 
   // New Complaint Form
-  const [cmpCategory, setCmpCategory] = useState<Complaint['category']>('Plumbing');
+  const [cmpCategory, setCmpCategory] = useState('');
   const [cmpTitle, setCmpTitle] = useState('');
   const [cmpDesc, setCmpDesc] = useState('');
   const [cmpPriority, setCmpPriority] = useState<ComplaintPriority>('MEDIUM');
-  const [hasPhoto, setHasPhoto] = useState(false);
+  const [submittingComplaint, setSubmittingComplaint] = useState(false);
+  // Until the resident picks one, the first option of the lookup table is used.
+  const chosenCategory = cmpCategory || categories[0]?.code || '';
 
   // New Visitor Form
   const [visName, setVisName] = useState('');
@@ -114,20 +131,16 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
 
   const loadLocalData = async () => {
     const resId = me?.id ?? user?.residentId;
-    const [c, a, v, l, n, d, m] = await Promise.all([
-      ResidentStorage.getComplaints(resId),
+    const [a, v, l, d, m] = await Promise.all([
       ResidentStorage.getAttendance(resId),
       ResidentStorage.getVisitors(resId),
       ResidentStorage.getLeaves(resId),
-      ResidentStorage.getNotices(),
       ResidentStorage.getDocuments(),
       ResidentStorage.getMealPreferences(resId),
     ]);
-    setComplaints(c);
     setAttendance(a);
     setVisitors(v);
     setLeaves(l);
-    setNotices(n);
     setDocuments(d);
     setMealPrefs(m);
   };
@@ -144,70 +157,34 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
     );
   };
 
-  const handleOpenUpi = async () => {
-    if (!pg?.upiId) {
-      Alert.alert(
-        'UPI ID Not Configured',
-        `The owner has not configured a UPI ID yet. Please contact ${pg?.ownerMobile || 'the front desk'} for payment details.`
-      );
-      return;
+  const handleGiveNotice = async (v: Record<string, string>) => {
+    if (!isDate(v.vacateOn) || v.vacateOn < earliestLeave()) {
+      Alert.alert('Check the date', `Notice must be at least ${NOTICE_DAYS} days. Earliest leaving date is ${earliestLeave()}.`);
+      return false;
     }
-    const dueAmount = me?.due && me.due > 0 ? me.due : (me?.rent || 5000);
-    const pgName = pg?.upiName || pg?.name || 'PG Management';
-    const cleanUpi = pg.upiId.trim();
-    const upiUrl = `upi://pay?pa=${encodeURIComponent(cleanUpi)}&pn=${encodeURIComponent(pgName)}&am=${dueAmount}&cu=INR&tn=${encodeURIComponent(`Rent for ${me?.name || 'Resident'}`)}`;
-
-    try {
-      await Linking.openURL(upiUrl);
-    } catch {
-      Alert.alert(
-        'UPI Payment',
-        `Pay ₹${dueAmount} to UPI ID:\n\n${cleanUpi}\n(${pgName})\n\nAfter paying in GPay/PhonePe, tap "Enter UTR" to record it.`,
-        [
-          {
-            text: 'Enter UTR',
-            onPress: () => {
-              setPayAmount(String(dueAmount));
-              setActiveModal('PAYMENTS');
-            },
-          },
-          { text: 'OK' },
-        ]
-      );
-    }
+    const ok = await attempt(() => post('/api/me/vacate-notice', { vacateOn: v.vacateOn, reason: v.reason || null }));
+    if (!ok) return false;
+    setNoticeOpen(false);
+    refresh();
   };
 
-  const handleRecordPayment = async () => {
-    const amt = parseFloat(payAmount);
-    if (!(amt > 0)) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payment amount.');
-      return;
-    }
-    if (!isDate(payDate)) {
-      Alert.alert('Invalid Date', 'Date must be formatted as YYYY-MM-DD.');
-      return;
-    }
+  const handleCancelNotice = () =>
+    Alert.alert('Withdraw notice?', 'You will stay on as a resident.', [
+      { text: 'Keep notice', style: 'cancel' },
+      {
+        text: 'Withdraw',
+        style: 'destructive',
+        onPress: async () => {
+          if (await attempt(() => del('/api/me/vacate-notice'))) refresh();
+        },
+      },
+    ]);
 
-    setSubmittingPayment(true);
-    try {
-      const ok = await attempt(() =>
-        post('/api/me/payments', {
-          amount: amt,
-          date: payDate,
-          mode: 'UPI',
-          transactionRef: utrNumber.trim() || null,
-          notes: payNotes.trim() || null,
-        })
-      );
-      if (ok) {
-        Alert.alert('Payment Recorded', `Your payment of ₹${amt} has been recorded!`);
-        setActiveModal(null);
-        setUtrNumber('');
-        setPayNotes('');
-        refresh();
-      }
-    } finally {
-      setSubmittingPayment(false);
+  /** Opens the list and tells the server the resident has now seen any status changes. */
+  const openComplaints = async () => {
+    setActiveModal('COMPLAINTS');
+    if (updatedComplaints > 0 && (await attempt(() => post('/api/me/complaints/seen')))) {
+      complaintsRes.reload();
     }
   };
 
@@ -216,18 +193,31 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
       Alert.alert('Missing Details', 'Please provide a title and description for your issue.');
       return;
     }
-    const created = await ResidentStorage.addComplaint(me?.id, {
-      category: cmpCategory,
-      title: cmpTitle.trim(),
-      description: cmpDesc.trim(),
-      priority: cmpPriority,
-    });
-    setComplaints((prev) => [created, ...prev]);
-    setCmpTitle('');
-    setCmpDesc('');
-    setHasPhoto(false);
-    setActiveModal('COMPLAINTS');
-    Alert.alert('Complaint Raised', `Ticket #${created.id} submitted successfully. The maintenance team has been notified.`);
+    if (!chosenCategory) {
+      Alert.alert('Category needed', 'Please pick a category for your issue.');
+      return;
+    }
+    setSubmittingComplaint(true);
+    try {
+      const created = await attempt(() =>
+        post<Complaint>('/api/me/complaints', {
+          category: chosenCategory,
+          title: cmpTitle.trim(),
+          description: cmpDesc.trim(),
+          priority: cmpPriority,
+        })
+      );
+      if (!created) return;
+      setCmpTitle('');
+      setCmpDesc('');
+      setCmpCategory('');
+      setCmpPriority('MEDIUM');
+      setActiveModal('COMPLAINTS');
+      complaintsRes.reload();
+      Alert.alert('Complaint Raised', 'Your complaint has been sent to the owner. You will be notified when it is resolved.');
+    } finally {
+      setSubmittingComplaint(false);
+    }
   };
 
   const handleSaveVisitor = async () => {
@@ -294,26 +284,45 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
     Linking.openURL(`https://wa.me/${num}?text=Hi%2C%20I%20am%20${encodeURIComponent(me?.name || 'Resident')}%20from%20Room%20${me?.roomNumber || ''}.`);
   };
 
+  // Opens the resident's UPI app (GPay / PhonePe / Paytm) with the owner's UPI ID and the amount due filled in.
+  const handlePayUpi = async () => {
+    if (!pg?.upiId) {
+      Alert.alert(
+        'UPI ID Not Configured',
+        `The owner of ${pg?.name || 'this PG'} has not set up a UPI ID yet. Please contact the owner at ${pg?.ownerMobile || 'the front desk'} for payment details.`,
+      );
+      return;
+    }
+    const amount = me?.due ?? 0;
+    const payee = pg.upiName || pg.name || 'PG Management';
+    const note = `Rent for ${me?.name || 'Resident'}`;
+    const url = `upi://pay?pa=${encodeURIComponent(pg.upiId.trim())}&pn=${encodeURIComponent(payee)}&am=${amount}&cu=INR&tn=${encodeURIComponent(note)}`;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('No UPI app found', `Pay ${money(amount)} to UPI ID ${pg.upiId.trim()} (${payee}), then record the payment under My Dues.`);
+    }
+  };
+
   const roomBedSummary = [
     me?.roomNumber ? `Room ${me.roomNumber}` : null,
     me?.sectionName && me.sectionName !== 'Main Room' ? me.sectionName : null,
-    me?.bedNumber ? `Bed ${me.bedNumber}` : null,
+    me?.bedNumber ? `${me.bedNumber}` : null,
   ].filter(Boolean).join(' · ');
 
   return (
     <Screen
       title="Resident Hub"
-      action={<HeaderAction label="Log out" icon="log-out-outline" onPress={logout} />}
       loading={loading}
       error={error && !error.toLowerCase().includes('resident profile') ? error : null}
       refreshing={refreshing}
-      onRefresh={refresh}
+      onRefresh={() => { refresh(); complaintsRes.refresh(); }}
     >
       {/* ── 1. Resident Hero Card / Room Details ── */}
       <View style={rdStyles.heroCard}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <Avatar name={me?.name || user?.username || 'Resident'} />
+            <Avatar name={me?.name || user?.username || 'Resident'} uri={me?.photoUrl} />
             <View>
               <Text style={rdStyles.heroGreeting}>Welcome back,</Text>
               <Text style={rdStyles.heroName}>{me?.name || user?.username || 'Resident'}</Text>
@@ -351,406 +360,121 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
               </TouchableOpacity>
             ) : null}
           </View>
-          <TouchableOpacity
-            style={[rdStyles.attendancePill, { backgroundColor: isCheckedIn ? '#ecfdf5' : '#fef2f2', borderColor: isCheckedIn ? '#86efac' : '#fca5a5' }]}
-            onPress={handleToggleAttendance}
-          >
-            <View style={[rdStyles.statusDot, { backgroundColor: isCheckedIn ? '#16a34a' : '#dc2626' }]} />
-            <Text style={{ fontSize: 12, fontWeight: '700', color: isCheckedIn ? '#16a34a' : '#dc2626' }}>
-              {isCheckedIn ? 'Inside PG' : 'Out of PG'}
-            </Text>
-          </TouchableOpacity>
         </View>
       </View>
 
       {/* ── 2. Dues & Quick Pay Banner ── */}
       {me && (
-        <Card style={rdStyles.duesCard}>
-          <View style={s.row}>
-            <View>
-              <Text style={s.muted}>Current Balance / Due</Text>
+        <Card
+          style={{
+            ...rdStyles.duesCard,
+            ...(me.due > 0
+              ? { backgroundColor: '#fef2f2', borderLeftColor: colors.bad }
+              : { backgroundColor: '#f0fdf4', borderLeftColor: colors.good }),
+          }}
+        >
+          <View style={[s.row, { alignItems: 'center' }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={[s.muted, { fontWeight: '700' }]}>Current Balance / Due</Text>
               <Text style={[rdStyles.dueAmount, { color: me.due > 0 ? colors.bad : colors.good }]}>
-                {me.due > 0 ? `${money(me.due)} due` : 'Paid in Full'}
+                {me.due > 0 ? `${money(me.due)} due` : 'No Dues'}
               </Text>
               <Text style={[s.muted, { fontSize: 11, marginTop: 2 }]}>
                 Monthly Rent: {money(me.rent)} · Paid: {money(me.paid)}
               </Text>
-            </View>
-            <View style={{ gap: 6 }}>
-              {me.due > 0 && (
-                <TouchableOpacity style={rdStyles.quickPayBtn} onPress={handleOpenUpi}>
-                  <Ionicons name="flash" size={14} color="#fff" />
-                  <Text style={rdStyles.quickPayText}>Pay (UPI)</Text>
-                </TouchableOpacity>
-              )}
               <TouchableOpacity
-                style={rdStyles.receiptsBtn}
-                onPress={() => setActiveModal('PAYMENTS')}
+                style={[rdStyles.receiptsBtn, { alignSelf: 'flex-start', marginTop: 8, backgroundColor: '#ffffffcc' }]}
+                onPress={() => navigation?.navigate('My Dues')}
               >
-                <Text style={rdStyles.receiptsBtnText}>History & UTR</Text>
+                <Text style={rdStyles.receiptsBtnText}>{me.due > 0 ? 'Pay & receipts' : 'Receipts'}</Text>
               </TouchableOpacity>
             </View>
+            {me.due > 0 && (
+              <View style={{ alignItems: 'center' }}>
+                <TouchableOpacity style={rdStyles.payCircle} onPress={handlePayUpi} accessibilityLabel="Pay with UPI app">
+                  <Ionicons name="wallet" size={22} color="#fff" />
+                </TouchableOpacity>
+                <Text style={rdStyles.payLabel}>Pay now</Text>
+              </View>
+            )}
           </View>
         </Card>
       )}
 
-      {/* ── 3. Latest Announcement Banner ── */}
-      {notices.length > 0 && (
-        <TouchableOpacity
-          style={rdStyles.noticeBanner}
-          onPress={() => setActiveModal('NOTICES')}
-          activeOpacity={0.8}
-        >
-          <View style={rdStyles.noticeIconWrap}>
-            <Ionicons name="megaphone" size={18} color="#b45309" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Badge text={notices[0].category} color="#f59e0b" />
-              <Text style={{ fontSize: 11, color: colors.muted }}>{notices[0].date}</Text>
+      {/* ── 2b. Notice to vacate ── */}
+      {me && me.status !== 'CHECKED_OUT' && (
+        <Card>
+          {me.noticeStatus === 'REQUESTED' || me.noticeStatus === 'APPROVED' ? (
+            <View style={s.row}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: colors.text }}>Leaving on {me.vacateOn}</Text>
+                <Text style={[s.muted, { marginTop: 2 }]}>
+                  {me.noticeStatus === 'APPROVED'
+                    ? 'Approved by the owner. Your bed is listed as available from that date.'
+                    : 'Waiting for the owner to approve your notice.'}
+                </Text>
+              </View>
+              <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                <Badge
+                  text={me.noticeStatus === 'APPROVED' ? 'Approved' : 'Pending'}
+                  color={me.noticeStatus === 'APPROVED' ? colors.good : colors.warn}
+                />
+                <TouchableOpacity onPress={handleCancelNotice}>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: colors.bad }}>Withdraw</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <Text style={rdStyles.noticeTitle} numberOfLines={1}>{notices[0].title}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-        </TouchableOpacity>
+          ) : (
+            <View style={s.row}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: colors.text }}>Planning to leave?</Text>
+                <Text style={[s.muted, { marginTop: 2 }]}>
+                  {me.noticeStatus === 'REJECTED'
+                    ? 'Your last notice was declined by the owner. You can send a new one.'
+                    : `Give at least ${NOTICE_DAYS} days notice so the owner can plan.`}
+                </Text>
+              </View>
+              <TouchableOpacity style={rdStyles.receiptsBtn} onPress={() => setNoticeOpen(true)}>
+                <Text style={rdStyles.receiptsBtnText}>Give notice</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </Card>
       )}
 
-      {/* ── 4. Today's Food Sneak Peek ── */}
-      <TouchableOpacity
-        style={rdStyles.foodCard}
-        onPress={() => setActiveModal('FOOD')}
-        activeOpacity={0.8}
-      >
-        <View style={s.row}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <View style={rdStyles.foodIconWrap}>
-              <Ionicons name="restaurant" size={18} color="#ea580c" />
-            </View>
-            <View>
-              <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>
-                Today's Menu ({todayDayName})
-              </Text>
-              <Text style={{ fontSize: 11, color: colors.muted }}>Tap to view full meal plan & preferences</Text>
-            </View>
-          </View>
-          <Badge text={mealPrefs.dietType} color={mealPrefs.dietType === 'VEG' ? '#16a34a' : '#dc2626'} />
-        </View>
+      <FormModal
+        visible={noticeOpen}
+        title="Notice to vacate"
+        submitLabel="Send notice"
+        onClose={() => setNoticeOpen(false)}
+        fields={[
+          { key: 'vacateOn', label: `Leaving date (earliest ${earliestLeave()})`, initial: earliestLeave(), date: true, min: earliestLeave() },
+          { key: 'reason', label: 'Reason (optional)', optional: true },
+        ]}
+        onSubmit={handleGiveNotice}
+      />
 
-        <View style={rdStyles.mealRow}>
-          <View style={rdStyles.mealItem}>
-            <Text style={rdStyles.mealLabel}>Breakfast</Text>
-            <Text style={rdStyles.mealVal} numberOfLines={1}>{todayMenu.breakfast}</Text>
-          </View>
-          <View style={rdStyles.mealItem}>
-            <Text style={rdStyles.mealLabel}>Lunch</Text>
-            <Text style={rdStyles.mealVal} numberOfLines={1}>{todayMenu.lunch}</Text>
-          </View>
-          <View style={rdStyles.mealItem}>
-            <Text style={rdStyles.mealLabel}>Dinner</Text>
-            <Text style={rdStyles.mealVal} numberOfLines={1}>{todayMenu.dinner}</Text>
-          </View>
-        </View>
-      </TouchableOpacity>
+      {/* Today's menu card is hidden for now (it opens the FOOD modal below). */}
 
       {/* ── 5. All 12 Resident Functionality Modules Grid ── */}
-      <Text style={[s.h2, { marginTop: 18, marginBottom: 10 }]}>Resident Services</Text>
+      <Text style={[s.h2, { marginTop: 18, marginBottom: 8 }]}>Resident Services</Text>
 
+      {/* Same tile style as the owner Dashboard quick actions. */}
       <View style={rdStyles.grid}>
-        {/* Module 1: Room & Bed */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('ROOM')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#eff6ff' }]}>
-            <Ionicons name="bed" size={22} color="#2563eb" />
-          </View>
-          <Text style={rdStyles.tileTitle}>My Room</Text>
-          <Text style={rdStyles.tileSub}>Bed & Facilities</Text>
-        </TouchableOpacity>
-
-        {/* Module 2: Payments & Dues */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('PAYMENTS')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#f0fdf4' }]}>
-            <Ionicons name="wallet" size={22} color="#16a34a" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Payments</Text>
-          <Text style={rdStyles.tileSub}>UPI & Receipts</Text>
-        </TouchableOpacity>
-
-        {/* Module 3: Complaints & Issues */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('COMPLAINTS')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#fff7ed' }]}>
-            <Ionicons name="construct" size={22} color="#ea580c" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Complaints</Text>
-          <Text style={rdStyles.tileSub}>
-            {complaints.filter((c) => c.status !== 'RESOLVED').length} Active
-          </Text>
-        </TouchableOpacity>
-
-        {/* Module 4: Food & Menu */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('FOOD')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#fef2f2' }]}>
-            <Ionicons name="restaurant" size={22} color="#dc2626" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Mess & Food</Text>
-          <Text style={rdStyles.tileSub}>Menu & Preferences</Text>
-        </TouchableOpacity>
-
-        {/* Module 5: Attendance / Gate Pass */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('ATTENDANCE')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#f5f3ff' }]}>
-            <Ionicons name="timer" size={22} color="#7c3aed" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Attendance</Text>
-          <Text style={rdStyles.tileSub}>{isCheckedIn ? 'In PG' : 'Out'}</Text>
-        </TouchableOpacity>
-
-        {/* Module 6: Visitors */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('VISITORS')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#fdf4ff' }]}>
-            <Ionicons name="people" size={22} color="#c026d3" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Visitors</Text>
-          <Text style={rdStyles.tileSub}>Guest Pass</Text>
-        </TouchableOpacity>
-
-        {/* Module 7: Leave */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('LEAVE')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#ecfeff' }]}>
-            <Ionicons name="airplane" size={22} color="#0891b2" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Leave</Text>
-          <Text style={rdStyles.tileSub}>Apply Vacation</Text>
-        </TouchableOpacity>
-
-        {/* Module 8: Notices */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('NOTICES')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#fefce8' }]}>
-            <Ionicons name="notifications" size={22} color="#ca8a04" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Notices</Text>
-          <Text style={rdStyles.tileSub}>{notices.length} Updates</Text>
-        </TouchableOpacity>
-
-        {/* Module 9: Documents */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('DOCUMENTS')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#f1f5f9' }]}>
-            <Ionicons name="document-text" size={22} color="#475569" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Documents</Text>
-          <Text style={rdStyles.tileSub}>Agreements & IDs</Text>
-        </TouchableOpacity>
-
-        {/* Module 10: Support & Emergency */}
-        <TouchableOpacity
-          style={rdStyles.gridTile}
-          onPress={() => setActiveModal('SUPPORT')}
-        >
-          <View style={[rdStyles.tileIconWrap, { backgroundColor: '#fee2e2' }]}>
-            <Ionicons name="call" size={22} color="#ef4444" />
-          </View>
-          <Text style={rdStyles.tileTitle}>Support</Text>
-          <Text style={rdStyles.tileSub}>Owner & Helpline</Text>
-        </TouchableOpacity>
+        {/* <ServiceTile icon="bed" color="#2563eb" label="My Room" onPress={() => setActiveModal('ROOM')} /> */}
+        <ServiceTile
+          icon="construct"
+          color="#0d9488"
+          label="Complaints"
+          badge={updatedComplaints || complaints.filter((c) => c.status !== 'RESOLVED').length}
+          onPress={openComplaints}
+        />
+        {/* Mess & Food, Attendance, Visitors, Leave and Documents tiles are hidden for now. */}
+        <ServiceTile icon="clipboard" color="#7c3aed" label="Notice Board" onPress={openNoticeBoard} />
+        <ServiceTile icon="call" color="#ef4444" label="Support" onPress={() => setActiveModal('SUPPORT')} />
       </View>
 
       {/* ── Sub-Modals for each module ── */}
-
-      {/* 💳 PAYMENTS MODAL */}
-      <Modal visible={activeModal === 'PAYMENTS'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
-        <View style={s.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActiveModal(null)} />
-          <View style={s.sheet}>
-            <View style={s.handle} />
-            <View style={s.sheetHeader}>
-              <View>
-                <Text style={s.sheetTitle}>Payments & Receipts</Text>
-                <Text style={s.muted}>UPI transfers, UTR confirmation & history</Text>
-              </View>
-              <Pressable onPress={() => setActiveModal(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.muted} />
-              </Pressable>
-            </View>
-
-            <ScrollView contentContainerStyle={s.sheetBody}>
-              {/* Pay Now Section */}
-              <View style={rdStyles.upiBox}>
-                <View style={s.row}>
-                  <View>
-                    <Text style={{ fontSize: 13, color: colors.muted }}>Total Amount Due</Text>
-                    <Text style={{ fontSize: 22, fontWeight: '900', color: me?.due ? colors.bad : colors.good }}>
-                      {money(me?.due || 0)}
-                    </Text>
-                  </View>
-                  <TouchableOpacity style={rdStyles.quickPayBtn} onPress={handleOpenUpi}>
-                    <Ionicons name="logo-google-playstore" size={15} color="#fff" />
-                    <Text style={rdStyles.quickPayText}>Pay via UPI App</Text>
-                  </TouchableOpacity>
-                </View>
-                {pg?.upiId ? (
-                  <Text style={{ fontSize: 11, color: colors.muted, marginTop: 8 }}>
-                    Configured UPI ID: <Text style={{ fontWeight: '700', color: '#0f172a' }}>{pg.upiId}</Text> ({pg.upiName || pg.name})
-                  </Text>
-                ) : null}
-              </View>
-
-              {/* Enter UTR form */}
-              <Text style={[s.h2, { marginTop: 14, marginBottom: 8 }]}>Record UPI / Cash Payment</Text>
-              <Text style={s.label}>Amount Paid (₹) *</Text>
-              <TextInput
-                style={s.input}
-                value={payAmount}
-                onChangeText={setPayAmount}
-                keyboardType="number-pad"
-                placeholder={me?.due ? String(me.due) : '5000'}
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={s.label}>UPI Transaction ID / UTR Number</Text>
-              <TextInput
-                style={s.input}
-                value={utrNumber}
-                onChangeText={setUtrNumber}
-                placeholder="12-digit UTR from GPay / PhonePe / Paytm"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={s.label}>Payment Date</Text>
-              <TextInput
-                style={s.input}
-                value={payDate}
-                onChangeText={setPayDate}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.muted}
-              />
-
-              <TouchableOpacity
-                style={[s.saveBtn, submittingPayment && { opacity: 0.6 }]}
-                onPress={handleRecordPayment}
-                disabled={submittingPayment}
-              >
-                <Text style={s.saveText}>{submittingPayment ? 'Submitting...' : 'Submit Payment'}</Text>
-              </TouchableOpacity>
-
-              {/* Payment History & Receipts */}
-              <Text style={[s.h2, { marginTop: 20, marginBottom: 8 }]}>Payment Receipts & History</Text>
-              {data?.payments && data.payments.length === 0 && <Text style={s.muted}>No previous payments found.</Text>}
-              {data?.payments?.map((p) => (
-                <View key={p.id} style={rdStyles.paymentCard}>
-                  <View style={s.row}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>{p.date}</Text>
-                      <Text style={{ fontSize: 12, color: colors.muted }}>
-                        Mode: {p.mode || 'UPI'} {p.transactionRef ? `· UTR: ${p.transactionRef}` : ''}
-                      </Text>
-                    </View>
-                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                      <Text style={{ fontSize: 16, fontWeight: '800', color: colors.good }}>{money(p.amount)}</Text>
-                      <TouchableOpacity
-                        style={rdStyles.viewReceiptPill}
-                        onPress={() => {
-                          setSelectedReceipt(p);
-                          setActiveModal('RECEIPT');
-                        }}
-                      >
-                        <Ionicons name="receipt-outline" size={12} color="#2563eb" />
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#2563eb' }}>Receipt</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                </View>
-              ))}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 📄 DIGITAL RECEIPT MODAL */}
-      <Modal visible={activeModal === 'RECEIPT'} transparent animationType="fade" onRequestClose={() => setActiveModal('PAYMENTS')}>
-        <View style={s.overlay}>
-          <View style={rdStyles.receiptSheet}>
-            <View style={{ alignItems: 'center', marginBottom: 12 }}>
-              <View style={rdStyles.receiptLogoWrap}>
-                <Ionicons name="checkmark-circle" size={40} color="#16a34a" />
-              </View>
-              <Text style={{ fontSize: 18, fontWeight: '900', color: '#0f172a', marginTop: 4 }}>
-                {pg?.name || 'PG Management'}
-              </Text>
-              <Text style={{ fontSize: 12, color: colors.muted }}>Official Payment Receipt</Text>
-            </View>
-
-            <View style={rdStyles.receiptDivider} />
-
-            <View style={rdStyles.receiptDetailRow}>
-              <Text style={s.muted}>Receipt ID:</Text>
-              <Text style={{ fontWeight: '700' }}>REC-{selectedReceipt?.id || '101'}</Text>
-            </View>
-            <View style={rdStyles.receiptDetailRow}>
-              <Text style={s.muted}>Resident Name:</Text>
-              <Text style={{ fontWeight: '700' }}>{me?.name || user?.username}</Text>
-            </View>
-            <View style={rdStyles.receiptDetailRow}>
-              <Text style={s.muted}>Room & Bed:</Text>
-              <Text style={{ fontWeight: '700' }}>{roomBedSummary || 'Standard'}</Text>
-            </View>
-            <View style={rdStyles.receiptDetailRow}>
-              <Text style={s.muted}>Payment Date:</Text>
-              <Text style={{ fontWeight: '700' }}>{selectedReceipt?.date || today()}</Text>
-            </View>
-            <View style={rdStyles.receiptDetailRow}>
-              <Text style={s.muted}>Payment Mode:</Text>
-              <Text style={{ fontWeight: '700' }}>{selectedReceipt?.mode || 'UPI'}</Text>
-            </View>
-            {selectedReceipt?.transactionRef ? (
-              <View style={rdStyles.receiptDetailRow}>
-                <Text style={s.muted}>UTR Reference:</Text>
-                <Text style={{ fontWeight: '700' }}>{selectedReceipt.transactionRef}</Text>
-              </View>
-            ) : null}
-
-            <View style={rdStyles.receiptDivider} />
-
-            <View style={rdStyles.receiptDetailRow}>
-              <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Amount Paid:</Text>
-              <Text style={{ fontSize: 20, fontWeight: '900', color: colors.good }}>
-                {money(selectedReceipt?.amount || 0)}
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              style={[s.saveBtn, { marginTop: 16 }]}
-              onPress={() => setActiveModal('PAYMENTS')}
-            >
-              <Text style={s.saveText}>Close Receipt</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* 🛠️ COMPLAINTS MODAL */}
       <Modal visible={activeModal === 'COMPLAINTS'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
@@ -783,7 +507,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
               {complaints.map((c) => (
                 <View key={c.id} style={rdStyles.ticketCard}>
                   <View style={s.row}>
-                    <Badge text={c.category} color="#3b82f6" />
+                    <Badge text={c.categoryLabel} color="#3b82f6" />
                     <Badge
                       text={c.status === 'RESOLVED' ? 'Resolved' : c.status === 'IN_PROGRESS' ? 'In Progress' : 'Open'}
                       color={c.status === 'RESOLVED' ? '#16a34a' : c.status === 'IN_PROGRESS' ? '#ea580c' : '#eab308'}
@@ -795,12 +519,18 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
                   {c.resolutionNotes ? (
                     <View style={rdStyles.resolutionBox}>
                       <Ionicons name="checkmark-done" size={14} color="#16a34a" />
-                      <Text style={{ fontSize: 12, color: '#166534', flex: 1 }}>{c.resolutionNotes}</Text>
+                      <Text style={{ fontSize: 12, color: '#166534', flex: 1 }}>
+                        {c.resolutionNotes}
+                        {c.handledBy ? ` — ${c.handledBy}` : ''}
+                      </Text>
                     </View>
                   ) : null}
 
                   <View style={[s.row, { marginTop: 8 }]}>
-                    <Text style={{ fontSize: 11, color: colors.muted }}>Created: {c.createdAt}</Text>
+                    <Text style={{ fontSize: 11, color: colors.muted }}>
+                      Raised: {c.createdAt?.slice(0, 10)}
+                      {c.status === 'RESOLVED' && c.resolvedAt ? ` · Resolved: ${c.resolvedAt.slice(0, 10)}` : ''}
+                    </Text>
                     <Badge
                       text={`Priority: ${c.priority}`}
                       color={c.priority === 'HIGH' ? '#dc2626' : c.priority === 'MEDIUM' ? '#ea580c' : '#64748b'}
@@ -831,13 +561,13 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
             <ScrollView contentContainerStyle={s.sheetBody}>
               <Text style={s.label}>Category</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginBottom: 12 }}>
-                {(['Plumbing', 'Electrical', 'Wi-Fi', 'Cleaning', 'Food', 'Air Conditioning', 'Room Furniture', 'Other'] as const).map((cat) => (
+                {categories.map((cat) => (
                   <TouchableOpacity
-                    key={cat}
-                    style={[rdStyles.catChip, cmpCategory === cat && rdStyles.catChipActive]}
-                    onPress={() => setCmpCategory(cat)}
+                    key={cat.code}
+                    style={[rdStyles.catChip, chosenCategory === cat.code && rdStyles.catChipActive]}
+                    onPress={() => setCmpCategory(cat.code)}
                   >
-                    <Text style={[rdStyles.catChipText, cmpCategory === cat && rdStyles.catChipTextActive]}>{cat}</Text>
+                    <Text style={[rdStyles.catChipText, chosenCategory === cat.code && rdStyles.catChipTextActive]}>{cat.label}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -874,22 +604,12 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
                 ))}
               </View>
 
-              <Text style={s.label}>Photo Attachment</Text>
               <TouchableOpacity
-                style={rdStyles.photoBtn}
-                onPress={() => {
-                  setHasPhoto(!hasPhoto);
-                  Alert.alert(hasPhoto ? 'Photo Removed' : 'Photo Attached', hasPhoto ? '' : 'Photo (bathroom_leakage.jpg) attached.');
-                }}
+                style={[s.saveBtn, submittingComplaint && { opacity: 0.6 }]}
+                onPress={handleSaveComplaint}
+                disabled={submittingComplaint}
               >
-                <Ionicons name={hasPhoto ? 'checkmark-circle' : 'camera-outline'} size={18} color={hasPhoto ? '#16a34a' : colors.primary} />
-                <Text style={{ fontSize: 13, fontWeight: '700', color: hasPhoto ? '#16a34a' : colors.primary }}>
-                  {hasPhoto ? '1 Photo Attached (Tap to remove)' : 'Upload Issue Photo'}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.saveBtn} onPress={handleSaveComplaint}>
-                <Text style={s.saveText}>Submit Complaint</Text>
+                <Text style={s.saveText}>{submittingComplaint ? 'Submitting...' : 'Submit Complaint'}</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -1116,8 +836,8 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
               <Text style={s.label}>Relationship</Text>
               <TextInput style={s.input} value={visRel} onChangeText={setVisRel} placeholder="Friend / Parent / Sibling" />
 
-              <Text style={s.label}>Visit Date (YYYY-MM-DD)</Text>
-              <TextInput style={s.input} value={visDate} onChangeText={setVisDate} />
+              <Text style={s.label}>Visit Date</Text>
+              <DateField value={visDate} onChange={setVisDate} min={today()} />
 
               <Text style={s.label}>Expected Time</Text>
               <TextInput style={s.input} value={visTime} onChangeText={setVisTime} placeholder="e.g. 05:00 PM" />
@@ -1197,11 +917,18 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
             </View>
 
             <ScrollView contentContainerStyle={s.sheetBody}>
-              <Text style={s.label}>Start Date (YYYY-MM-DD) *</Text>
-              <TextInput style={s.input} value={leaveStart} onChangeText={setLeaveStart} placeholder="YYYY-MM-DD" />
+              <Text style={s.label}>Start Date *</Text>
+              <DateField
+                value={leaveStart}
+                onChange={(d) => {
+                  setLeaveStart(d);
+                  if (leaveEnd < d) setLeaveEnd(d);
+                }}
+                min={today()}
+              />
 
-              <Text style={s.label}>End Date (YYYY-MM-DD) *</Text>
-              <TextInput style={s.input} value={leaveEnd} onChangeText={setLeaveEnd} placeholder="YYYY-MM-DD" />
+              <Text style={s.label}>End Date *</Text>
+              <DateField value={leaveEnd} onChange={setLeaveEnd} min={leaveStart || today()} />
 
               <Text style={s.label}>Reason for Leave *</Text>
               <TextInput
@@ -1312,38 +1039,6 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
         </View>
       </Modal>
 
-      {/* 📢 NOTICES MODAL */}
-      <Modal visible={activeModal === 'NOTICES'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
-        <View style={s.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActiveModal(null)} />
-          <View style={s.sheet}>
-            <View style={s.handle} />
-            <View style={s.sheetHeader}>
-              <View>
-                <Text style={s.sheetTitle}>PG Notices & Announcements</Text>
-                <Text style={s.muted}>Updates and guidelines from management</Text>
-              </View>
-              <Pressable onPress={() => setActiveModal(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.muted} />
-              </Pressable>
-            </View>
-
-            <ScrollView contentContainerStyle={s.sheetBody}>
-              {notices.map((n) => (
-                <View key={n.id} style={rdStyles.noticeFullCard}>
-                  <View style={s.row}>
-                    <Badge text={n.category} color={n.important ? '#dc2626' : '#2563eb'} />
-                    <Text style={{ fontSize: 11, color: colors.muted }}>{n.date}</Text>
-                  </View>
-                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a', marginTop: 6 }}>{n.title}</Text>
-                  <Text style={{ fontSize: 13, color: '#475569', marginTop: 4, lineHeight: 18 }}>{n.content}</Text>
-                </View>
-              ))}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
       {/* 📄 DOCUMENTS MODAL */}
       <Modal visible={activeModal === 'DOCUMENTS'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <View style={s.overlay}>
@@ -1361,6 +1056,24 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
             </View>
 
             <ScrollView contentContainerStyle={s.sheetBody}>
+              {me?.attachmentUrl && (
+                <View style={rdStyles.docCard}>
+                  <View style={[rdStyles.docIconWrap, { backgroundColor: '#eff6ff' }]}>
+                    <Ionicons name="document-text" size={20} color="#2563eb" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>Rental Agreement</Text>
+                    <Text style={{ fontSize: 11, color: colors.muted }}>Signed agreement uploaded by owner · Active</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={rdStyles.docActionBtn}
+                    onPress={() => me.attachmentUrl && Linking.openURL(me.attachmentUrl)}
+                  >
+                    <Ionicons name="eye-outline" size={16} color="#2563eb" />
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {documents.map((d) => (
                 <View key={d.id} style={rdStyles.docCard}>
                   <View style={rdStyles.docIconWrap}>
@@ -1378,6 +1091,56 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
                   </TouchableOpacity>
                 </View>
               ))}
+
+              {!me?.attachmentUrl && documents.length === 0 && (
+                <Text style={[s.muted, { textAlign: 'center', paddingVertical: 16 }]}>No documents available.</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 📋 NOTICE BOARD MODAL: the property's rules and regulations */}
+      <Modal visible={activeModal === 'NOTICE'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
+        <View style={[s.overlay, rdStyles.noticeOverlay]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActiveModal(null)} />
+          <View style={[s.sheet, rdStyles.noticeCard]}>
+            <View style={s.sheetHeader}>
+              <View>
+                <Text style={s.sheetTitle}>Notice Board</Text>
+                <Text style={s.muted}>Rules & regulations{pg?.name ? ` · ${pg.name}` : ''}</Text>
+              </View>
+              <Pressable onPress={() => setActiveModal(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.muted} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={rdStyles.noticeScroll}
+              contentContainerStyle={s.sheetBody}
+              showsVerticalScrollIndicator
+              persistentScrollbar
+              nestedScrollEnabled
+            >
+              {rules === null ? (
+                <Text style={[s.muted, { textAlign: 'center', marginVertical: 16 }]}>Loading…</Text>
+              ) : rules ? (
+                // One highlighted bullet per line; a leading "1.", "-" or "•" the owner typed is dropped.
+                rules
+                  .split(/\r?\n/)
+                  .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+                  .filter(Boolean)
+                  .map((line, i) => (
+                    <View key={i} style={rdStyles.ruleItem}>
+                      <View style={rdStyles.ruleDot} />
+                      <Text style={rdStyles.ruleText}>{line}</Text>
+                    </View>
+                  ))
+              ) : (
+                <Text style={[s.muted, { textAlign: 'center', marginVertical: 16 }]}>
+                  Your property has not posted any rules yet.
+                </Text>
+              )}
             </ScrollView>
           </View>
         </View>
@@ -1392,7 +1155,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
             <View style={s.sheetHeader}>
               <View>
                 <Text style={s.sheetTitle}>Support & Helpline</Text>
-                <Text style={s.muted}>Direct contact with PG staff & emergency services</Text>
+                <Text style={s.muted}>Contacts shared by your Owner</Text>
               </View>
               <Pressable onPress={() => setActiveModal(null)} hitSlop={10}>
                 <Ionicons name="close" size={22} color={colors.muted} />
@@ -1400,69 +1163,34 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
             </View>
 
             <ScrollView contentContainerStyle={s.sheetBody}>
-              {/* Owner / Manager Contact */}
-              <View style={rdStyles.contactCard}>
-                <View style={s.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>
-                      {pg?.name ? `${pg.name} Owner` : 'PG Owner / Manager'}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: colors.muted }}>
-                      {pg?.ownerMobile ? `Phone: ${pg.ownerMobile}` : 'Front Desk & Escalations'}
-                    </Text>
-                  </View>
-                  <View style={{ flexDirection: 'row', gap: 8 }}>
-                    <TouchableOpacity
-                      style={rdStyles.callCircle}
-                      onPress={() => handleCall(pg?.ownerMobile || '9876543210')}
-                    >
-                      <Ionicons name="call" size={16} color="#16a34a" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[rdStyles.callCircle, { backgroundColor: '#f0fdf4' }]}
-                      onPress={() => handleWhatsApp(pg?.ownerMobile || '9876543210')}
-                    >
-                      <Ionicons name="logo-whatsapp" size={16} color="#16a34a" />
-                    </TouchableOpacity>
+              {/* Numbers the owner chose to share; nothing is hard-coded here. */}
+              {supportContacts.length === 0 && (
+                <Text style={[s.muted, { textAlign: 'center', marginVertical: 16 }]}>
+                  Your PG has not added any contacts yet.
+                </Text>
+              )}
+              {supportContacts.map((c) => (
+                <View key={c.id} style={rdStyles.contactCard}>
+                  <View style={s.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>{c.name}</Text>
+                      <Text style={{ fontSize: 12, color: colors.muted }}>{c.phone}</Text>
+                      {!!c.note && <Text style={{ fontSize: 12, color: colors.muted }}>{c.note}</Text>}
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity style={rdStyles.callCircle} onPress={() => handleCall(c.phone)}>
+                        <Ionicons name="call" size={16} color="#16a34a" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[rdStyles.callCircle, { backgroundColor: '#f0fdf4' }]}
+                        onPress={() => handleWhatsApp(c.phone)}
+                      >
+                        <Ionicons name="logo-whatsapp" size={16} color="#16a34a" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
-              </View>
-
-              {/* Warden / Caretaker */}
-              <View style={rdStyles.contactCard}>
-                <View style={s.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>PG Warden / Caretaker</Text>
-                    <Text style={{ fontSize: 12, color: colors.muted }}>Available 24/7 at Ground Floor Desk</Text>
-                  </View>
-                  <TouchableOpacity
-                    style={rdStyles.callCircle}
-                    onPress={() => handleCall('9848011223')}
-                  >
-                    <Ionicons name="call" size={16} color="#16a34a" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Emergency Speed Dial */}
-              <Text style={[s.h2, { marginTop: 16, marginBottom: 8 }]}>Emergency Numbers</Text>
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <TouchableOpacity
-                  style={[rdStyles.emgBtn, { backgroundColor: '#fef2f2' }]}
-                  onPress={() => handleCall('112')}
-                >
-                  <Ionicons name="shield-checkmark" size={20} color="#dc2626" />
-                  <Text style={[rdStyles.emgText, { color: '#dc2626' }]}>Police & Emergency (112)</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[rdStyles.emgBtn, { backgroundColor: '#eff6ff' }]}
-                  onPress={() => handleCall('108')}
-                >
-                  <Ionicons name="medkit" size={20} color="#2563eb" />
-                  <Text style={[rdStyles.emgText, { color: '#2563eb' }]}>Ambulance (108)</Text>
-                </TouchableOpacity>
-              </View>
+              ))}
             </ScrollView>
           </View>
         </View>
@@ -1471,7 +1199,53 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
   );
 }
 
+/** Service shortcut: same look as the owner Dashboard quick actions (icon over a bold label, optional count badge). */
+function ServiceTile({
+  icon,
+  color,
+  label,
+  badge,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  color: string;
+  label: string;
+  badge?: number;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity style={rdStyles.gridTile} onPress={onPress} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={label}>
+      {badge ? (
+        <View style={rdStyles.tileBadge}>
+          <Text style={rdStyles.tileBadgeText}>{badge > 99 ? '99+' : badge}</Text>
+        </View>
+      ) : null}
+      <Ionicons name={icon} size={30} color={color} />
+      <Text style={rdStyles.tileLabel} numberOfLines={2}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 const rdStyles = StyleSheet.create({
+  // Notice board pops up in the middle of the screen instead of sliding up from the bottom.
+  noticeOverlay: { justifyContent: 'center', paddingHorizontal: 20 },
+  noticeCard: { borderRadius: 20, maxHeight: '75%' },
+  // Lets the list shrink to the card and scroll when there are many rules.
+  noticeScroll: { flexShrink: 1 },
+  ruleItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: colors.primaryLight,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  ruleDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary, marginTop: 7 },
+  ruleText: { flex: 1, fontSize: 14, lineHeight: 22, color: colors.text, fontWeight: '600' },
   heroCard: {
     backgroundColor: '#ffffff',
     borderRadius: 18,
@@ -1502,10 +1276,20 @@ const rdStyles = StyleSheet.create({
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   duesCard: {
     borderLeftWidth: 4,
-    borderLeftColor: '#3b82f6',
     marginBottom: 12,
+    borderRadius: 16,
+    paddingVertical: 14,
   },
-  dueAmount: { fontSize: 20, fontWeight: '900', marginTop: 2 },
+  dueAmount: { fontSize: 24, fontWeight: '900', marginTop: 2 },
+  payCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#16a34a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  payLabel: { fontSize: 10, fontWeight: '800', color: '#16a34a', marginTop: 3, textAlign: 'center' },
   quickPayBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1524,26 +1308,6 @@ const rdStyles = StyleSheet.create({
     backgroundColor: '#f1f5f9',
   },
   receiptsBtnText: { fontSize: 11, fontWeight: '700', color: '#334155' },
-  noticeBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fffbeb',
-    borderWidth: 1,
-    borderColor: '#fde68a',
-    borderRadius: 14,
-    padding: 12,
-    gap: 10,
-    marginBottom: 12,
-  },
-  noticeIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#fef3c7',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  noticeTitle: { fontSize: 13, fontWeight: '700', color: '#92400e', marginTop: 2 },
   foodCard: {
     backgroundColor: '#fff',
     borderRadius: 16,
@@ -1571,29 +1335,40 @@ const rdStyles = StyleSheet.create({
   mealItem: { flex: 1 },
   mealLabel: { fontSize: 11, fontWeight: '700', color: colors.muted },
   mealVal: { fontSize: 12, color: '#334155', fontWeight: '600', marginTop: 1 },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   gridTile: {
-    width: '48%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  tileIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    width: '23%',
+    minHeight: 82,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    elevation: 3,
+    shadowColor: '#1e293b',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
   },
-  tileTitle: { fontSize: 14, fontWeight: '800', color: '#0f172a' },
-  tileSub: { fontSize: 11, color: colors.muted, marginTop: 2 },
+  tileBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 6,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#ea580c',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  tileBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  tileLabel: { fontSize: 11, lineHeight: 14, fontWeight: '700', color: colors.text, textAlign: 'center' },
   upiBox: {
     backgroundColor: '#f0fdf4',
     padding: 14,
@@ -1812,14 +1587,6 @@ const rdStyles = StyleSheet.create({
     backgroundColor: '#f0fdf4',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  noticeFullCard: {
-    backgroundColor: '#fff',
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    marginBottom: 10,
   },
   docCard: {
     flexDirection: 'row',

@@ -43,3 +43,7 @@ yarn-error.*
 # Spring Boot backend copy
 backend/target/
 backend/.env
+
+# Firebase service-account keys (server secret). google-services.json is public config and may be committed.
+*firebase-adminsdk*.json
+firebase-credentials*.json

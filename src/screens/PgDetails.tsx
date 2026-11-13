@@ -5,7 +5,6 @@ import {
   Alert,
   Linking,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -18,8 +17,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { get, post } from '../api';
 import { useAuth } from '../auth';
+import { DateField } from '../dateField';
 import { useResource } from '../hooks';
-import { PublicBed, PublicPgDetail, PublicRoom, PublicSection, PublicSharingOption } from '../types';
+import { ImageGallery } from '../images';
+import { PublicBed, PublicPgDetail, PublicRoom } from '../types';
 import { Badge, Empty, colors, s } from '../ui';
 import { money, today } from '../utils';
 
@@ -63,8 +64,10 @@ export default function PgDetails({
 
   const [activeTab, setActiveTab] = useState<'beds' | 'amenities' | 'info'>('beds');
   const [sharingFilter, setSharingFilter] = useState<'ALL' | 'PRIVATE' | 'TWO_SHARING' | 'THREE_SHARING' | 'FOUR_SHARING' | 'AC'>('ALL');
+  const [floorFilter, setFloorFilter] = useState<string>('ALL');
   const [selectedRoom, setSelectedRoom] = useState<PublicRoom | null>(null);
   const [selectedBed, setSelectedBed] = useState<PublicBed | null>(null);
+  const [expandedRoomId, setExpandedRoomId] = useState<PublicRoom['id'] | null>(null);
   const [showInquiryModal, setShowInquiryModal] = useState(false);
 
   const [inquiryName, setInquiryName] = useState(user?.username || '');
@@ -74,9 +77,25 @@ export default function PgDetails({
   const [submitting, setSubmitting] = useState(false);
 
   const roomsList = pg?.rooms ?? [];
+  const isApartment = pg?.stayType === 'APARTMENT';
+
+  // Ground + every floor the property has (even if nothing is vacant there), plus any other floor named on a room.
+  // A room without a floor is on the Ground Floor.
+  const floorOf = (r: PublicRoom) => r.floorName?.trim() || 'Ground Floor';
+  const floorRank = (name: string) => (/^ground/i.test(name) ? 0 : parseInt(name, 10) || Number.MAX_SAFE_INTEGER);
+  const ordinal = (i: number) => `${i}${i === 1 ? 'st' : i === 2 ? 'nd' : i === 3 ? 'rd' : 'th'} Floor`;
+  const floors = [
+    ...new Set([
+      'Ground Floor',
+      ...Array.from({ length: pg?.totalFloors && pg.totalFloors > 0 ? pg.totalFloors : 0 }, (_, i) => ordinal(i + 1)),
+      ...roomsList.map(floorOf),
+    ]),
+  ].sort((a, b) => floorRank(a) - floorRank(b) || a.localeCompare(b));
+  const floorLabel = (name: string) => (/^ground/i.test(name) ? 'G' : name.replace(/\s*floor\s*/i, '').trim() || name);
 
   // Filter rooms according to user's criteria
   const filteredRooms = roomsList.filter((r) => {
+    if (floorFilter !== 'ALL' && floorOf(r) !== floorFilter) return false;
     if (sharingFilter === 'AC' && r.acType !== 'AC') return false;
     if (sharingFilter === 'PRIVATE') {
       const hasPrivate = r.sections.some((s) => s.sharingType === 'PRIVATE') || r.capacity === 1;
@@ -106,7 +125,7 @@ export default function PgDetails({
     const clean = pg.mobile.replace(/[^0-9]/g, '');
     let msg = `Hello, I am interested in joining *${pg.name}*.`;
     if (roomNumber && bedNumber) {
-      msg = `Hello, I saw *${pg.name}* on MyPG and I want to book *Bed ${bedNumber} in Room ${roomNumber}* (Rent: ₹${rentAmount || '—'}/mo). Please share next steps!`;
+      msg = `Hello, I saw *${pg.name}* on MyStay and I want to book *Bed ${bedNumber} in Room ${roomNumber}* (Rent: ₹${rentAmount || '—'}/mo). Please share next steps!`;
     }
     Linking.openURL(`https://wa.me/91${clean}?text=${encodeURIComponent(msg)}`);
   };
@@ -118,6 +137,8 @@ export default function PgDetails({
     } else {
       setSelectedRoom(room);
       setSelectedBed(bed);
+      // A bed that is still occupied can only be joined once the current resident leaves.
+      setInquiryDate(bed.availableFrom && bed.availableFrom > today() ? bed.availableFrom : today());
     }
   };
 
@@ -169,9 +190,7 @@ export default function PgDetails({
           <Text style={styles.headerTitle} numberOfLines={1}>
             {pg?.name || 'PG Details'}
           </Text>
-          <Text style={styles.headerSub} numberOfLines={1}>
-            {pg?.address ? `${pg.address}, ` : ''}{pg?.city || 'Bangalore'}
-          </Text>
+
         </View>
         <View style={styles.headerActions}>
           {pg?.mobile ? (
@@ -187,6 +206,43 @@ export default function PgDetails({
         </View>
       </View>
 
+      {/* ── Property summary ── */}
+      {pg && (
+        <View style={styles.propertySummary}>
+          <View style={styles.summaryLocationRow}>
+            <View style={styles.summaryPin}>
+              <Ionicons name="location-outline" size={17} color="#2563eb" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.summaryAddress} numberOfLines={2}>
+                {[pg.address, pg.city].filter(Boolean).join(', ') || 'Location not provided'}
+              </Text>
+              <Text style={styles.summaryType}>{pg.stayType || 'PG'} accommodation</Text>
+            </View>
+            {pg.locationUrl ? (
+              <TouchableOpacity style={styles.mapIconButton} onPress={() => Linking.openURL(pg.locationUrl!)}>
+                <Ionicons name="navigate-outline" size={18} color="#2563eb" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <View style={styles.summaryDivider} />
+          <View style={styles.summaryStats}>
+            <View style={styles.summaryStat}>
+              <Text style={styles.summaryNumber}>{pg.totalRooms ?? 0}</Text>
+              <Text style={styles.summaryLabel}>{isApartment ? 'Flats' : 'Rooms'}</Text>
+            </View>
+            <View style={styles.summaryStat}>
+              <Text style={styles.summaryNumber}>{pg.totalBeds ?? 0}</Text>
+              <Text style={styles.summaryLabel}>{isApartment ? 'Units' : 'Total beds'}</Text>
+            </View>
+            <View style={styles.summaryStat}>
+              <Text style={[styles.summaryNumber, { color: '#15803d' }]}>{pg.totalVacantBeds ?? 0}</Text>
+              <Text style={styles.summaryLabel}>Available</Text>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* ── Navigation Segment Tabs ── */}
       <View style={styles.tabBar}>
         <TouchableOpacity
@@ -195,7 +251,7 @@ export default function PgDetails({
         >
           <Ionicons name="bed-outline" size={16} color={activeTab === 'beds' ? '#2563eb' : colors.muted} />
           <Text style={[styles.tabItemText, activeTab === 'beds' && styles.tabItemTextActive]}>
-            Vacant Beds ({pg?.totalVacantBeds ?? 0})
+            {isApartment ? 'Available Flats' : 'Available Beds'}
           </Text>
         </TouchableOpacity>
 
@@ -205,7 +261,7 @@ export default function PgDetails({
         >
           <Ionicons name="sparkles-outline" size={16} color={activeTab === 'amenities' ? '#2563eb' : colors.muted} />
           <Text style={[styles.tabItemText, activeTab === 'amenities' && styles.tabItemTextActive]}>
-            Amenities ({pg?.amenities.length ?? 0})
+            Amenities
           </Text>
         </TouchableOpacity>
 
@@ -229,34 +285,70 @@ export default function PgDetails({
           contentContainerStyle={styles.scrollContent}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} colors={['#2563eb']} />}
         >
+          {pg?.images && pg.images.length > 0 && activeTab !== 'amenities' ? (
+            <View style={{ marginBottom: 12 }}>
+              <ImageGallery images={pg.images} height={156} />
+            </View>
+          ) : null}
+
           {/* ── TAB 1: VACANT BEDS & ROOMS ── */}
           {activeTab === 'beds' && (
             <View style={{ gap: 12 }}>
-              {/* Filter Row */}
+              {/* Floor filter */}
+              {floors.length > 1 && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                  <TouchableOpacity
+                    style={[styles.subFilterChip, floorFilter === 'ALL' && styles.subFilterChipActive]}
+                    onPress={() => setFloorFilter('ALL')}
+                  >
+                    <Ionicons name="layers-outline" size={12} color={floorFilter === 'ALL' ? '#fff' : '#64748b'} />
+                    <Text style={[styles.subFilterText, floorFilter === 'ALL' && styles.subFilterTextActive]}>All Floors</Text>
+                  </TouchableOpacity>
+                  {floors.map((f) => (
+                    <TouchableOpacity
+                      key={f}
+                      style={[styles.subFilterChip, floorFilter === f && styles.subFilterChipActive]}
+                      onPress={() => setFloorFilter(f)}
+                    >
+                      <Text style={[styles.subFilterText, floorFilter === f && styles.subFilterTextActive]}>{floorLabel(f)}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+
+              {/* Sharing filter */}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
                 <TouchableOpacity
                   style={[styles.subFilterChip, sharingFilter === 'ALL' && styles.subFilterChipActive]}
                   onPress={() => setSharingFilter('ALL')}
                 >
-                  <Text style={[styles.subFilterText, sharingFilter === 'ALL' && styles.subFilterTextActive]}>All Rooms</Text>
+                  <Text style={[styles.subFilterText, sharingFilter === 'ALL' && styles.subFilterTextActive]}>
+                    {isApartment ? 'All Flats' : 'All Rooms'}
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.subFilterChip, sharingFilter === 'PRIVATE' && styles.subFilterChipActive]}
                   onPress={() => setSharingFilter('PRIVATE')}
                 >
-                  <Text style={[styles.subFilterText, sharingFilter === 'PRIVATE' && styles.subFilterTextActive]}>1-Sharing Private</Text>
+                  <Text style={[styles.subFilterText, sharingFilter === 'PRIVATE' && styles.subFilterTextActive]}>
+                    {isApartment ? '1Bhk' : '1-Sharing Private'}
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.subFilterChip, sharingFilter === 'TWO_SHARING' && styles.subFilterChipActive]}
                   onPress={() => setSharingFilter('TWO_SHARING')}
                 >
-                  <Text style={[styles.subFilterText, sharingFilter === 'TWO_SHARING' && styles.subFilterTextActive]}>2-Sharing</Text>
+                  <Text style={[styles.subFilterText, sharingFilter === 'TWO_SHARING' && styles.subFilterTextActive]}>
+                    {isApartment ? '2Bhk' : '2-Sharing'}
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.subFilterChip, sharingFilter === 'THREE_SHARING' && styles.subFilterChipActive]}
                   onPress={() => setSharingFilter('THREE_SHARING')}
                 >
-                  <Text style={[styles.subFilterText, sharingFilter === 'THREE_SHARING' && styles.subFilterTextActive]}>3-Sharing</Text>
+                  <Text style={[styles.subFilterText, sharingFilter === 'THREE_SHARING' && styles.subFilterTextActive]}>
+                    {isApartment ? '3Bhk' : '3-Sharing'}
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.subFilterChip, sharingFilter === 'AC' && styles.subFilterChipActive]}
@@ -268,87 +360,132 @@ export default function PgDetails({
               </ScrollView>
 
               {filteredRooms.length === 0 && (
-                <Empty text="No vacant rooms match your sharing plan filter." />
+                <Empty text={isApartment ? 'No vacant flats match your filter.' : 'No vacant rooms match your sharing plan filter.'} />
               )}
 
-              {/* Room Cards List */}
+              {/* Room list: compact summary, expand for details */}
               {filteredRooms.map((room) => {
-                const hasVacancies = room.allVacantBeds.length > 0;
+                const isExpanded = expandedRoomId === room.id;
+                const totalVacant = room.allVacantBeds.length;
+                const vacantNow = room.allVacantBeds.filter((bed) => !bed.availableFrom).length;
+                const upcomingDates = room.allVacantBeds
+                  .map((bed) => bed.availableFrom)
+                  .filter((date): date is string => !!date)
+                  .sort();
+
                 return (
                   <View key={room.id} style={styles.roomCard}>
-                    {/* Room Header */}
-                    <View style={styles.roomHeadRow}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <Text style={styles.roomNum}>Room {room.number}</Text>
-                          {room.acType === 'AC' ? <Badge text="AC" color="#0284c7" /> : <Badge text="Non-AC" color="#64748b" />}
-                          {room.attachedBathroom && <Badge text="Attached Bath" color="#0d9488" />}
-                          {room.balcony && <Badge text="Balcony" color="#ea580c" />}
-                        </View>
-                        <Text style={styles.roomSubInfo}>
-                          {room.floorName ? `${room.floorName} · ` : ''}{room.buildingName || 'Main Building'} · {room.capacity}-Bed Capacity
-                        </Text>
-                      </View>
-
-                      <View style={styles.roomVacantBadge}>
-                        <Text style={styles.roomVacantBadgeText}>
-                          {hasVacancies ? `${room.allVacantBeds.length} Vacant` : 'Full'}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Sharing Plans Pricing */}
-                    {room.sharingOptions.length > 0 && (
-                      <View style={styles.sharingPlanBox}>
-                        <Text style={styles.sharingPlanTitle}>Available Sharing Plans:</Text>
-                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
-                          {room.sharingOptions.map((opt) => (
-                            <View key={opt.id} style={styles.sharingPlanPill}>
-                              <Text style={styles.sharingPlanText}>
-                                {opt.capacity}-Sharing: <Text style={{ fontWeight: '800', color: '#15803d' }}>{money(opt.rentPerBed)}</Text>/mo
-                              </Text>
+                    <TouchableOpacity
+                      activeOpacity={0.75}
+                      style={styles.roomSummaryButton}
+                      onPress={() => setExpandedRoomId(isExpanded ? null : room.id)}
+                    >
+                      <View style={styles.roomSummaryContent}>
+                        <View style={styles.roomHeadRow}>
+                          <View style={{ flex: 1 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <Text style={styles.roomNum}>{isApartment ? 'Flat' : 'Room'} {room.number}</Text>
+                              {room.attachedBathroom && <Badge text="Attached Bath" color="#0d9488" />}
+                              {room.balcony && <Badge text="Balcony" color="#ea580c" />}
                             </View>
-                          ))}
-                        </View>
-                      </View>
-                    )}
-
-                    {/* Vacant Beds Selection Grid */}
-                    <Text style={styles.vacantBedsHeading}>
-                      {hasVacancies ? 'Select a Vacant Bed to Book:' : 'No vacant beds available in this room.'}
-                    </Text>
-
-                    {hasVacancies && (
-                      <View style={styles.bedsGrid}>
-                        {room.sections.map((sec) => (
-                          <View key={sec.id} style={styles.secWrap}>
-                            {sec.sectionName !== 'Main Room' && (
-                              <Text style={styles.secName}>{sec.sectionName} ({sec.sharingType}):</Text>
-                            )}
-                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                              {sec.vacantBeds.map((bed) => {
-                                const isSelected = selectedBed?.id === bed.id;
-                                return (
-                                  <TouchableOpacity
-                                    key={bed.id}
-                                    style={[styles.bedPill, isSelected && styles.bedPillSelected]}
-                                    onPress={() => handleSelectBed(room, bed)}
-                                  >
-                                    <Ionicons
-                                      name="bed"
-                                      size={15}
-                                      color={isSelected ? '#fff' : '#16a34a'}
-                                    />
-                                    <Text style={[styles.bedPillText, isSelected && styles.bedPillTextSelected]}>
-                                      {bed.bedNumber} ({money(bed.rent)}/mo)
-                                    </Text>
-                                    {isSelected && <Ionicons name="checkmark-circle" size={14} color="#fff" />}
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
+                            <Text style={styles.roomSubInfo}>
+                              {[room.floorName, room.buildingName || 'Main Building', isApartment ? 'Apartment' : `${room.capacity}-bed capacity`]
+                                .filter(Boolean).join(' · ')}
+                            </Text>
                           </View>
-                        ))}
+                          <Ionicons
+                            name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                            size={20}
+                            color="#64748b"
+                          />
+                        </View>
+
+                        <View style={styles.roomSummaryFooter}>
+                          <View style={styles.vacancyCountWrap}>
+                            <Ionicons name="bed-outline" size={15} color="#15803d" />
+                            <Text style={styles.vacancyCountText}>
+                              {totalVacant} {isApartment ? 'vacant' : 'vacant beds'}
+                            </Text>
+                          </View>
+                          {vacantNow > 0 ? (
+                            <Text style={styles.vacancyMeta}>{vacantNow} available now</Text>
+                          ) : upcomingDates.length > 0 ? (
+                            <Text style={styles.vacancyMeta}>Next vacancy: {upcomingDates[0]}</Text>
+                          ) : (
+                            <Text style={styles.fullMeta}>Currently full</Text>
+                          )}
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+
+                    {isExpanded && (
+                      <View style={styles.expandedRoomContent}>
+                        {room.images && room.images.length > 0 ? (
+                          <ImageGallery images={room.images} height={112} />
+                        ) : null}
+
+                        <Text style={styles.vacantBedsHeading}>
+                          {totalVacant > 0
+                            ? isApartment ? 'Select a flat' : 'Select a vacant bed'
+                            : isApartment ? 'No vacant flats' : 'No vacant beds in this room'}
+                        </Text>
+
+                        {totalVacant > 0 && (
+                          <View style={styles.bedsGrid}>
+                            {room.sections.filter((sec) => sec.vacantBeds.length > 0).map((sec) => {
+                              const apartmentRoom = pg?.stayType === 'APARTMENT' || room.roomType?.startsWith('FLAT_') || room.roomType === 'STUDIO';
+                              const planLabel = apartmentRoom
+                                ? room.roomType === 'FLAT_1BHK' || sec.capacity === 1
+                                  ? '1 BHK'
+                                  : room.roomType === 'FLAT_2BHK' || sec.capacity === 2
+                                  ? '2 BHK'
+                                  : room.roomType === 'FLAT_3BHK' || sec.capacity === 3
+                                  ? '3 BHK'
+                                  : room.roomType === 'STUDIO'
+                                  ? 'Studio'
+                                  : `${sec.capacity}-Sharing`
+                                : sec.capacity === 1
+                                ? '1-Sharing Private'
+                                : `${sec.capacity}-Sharing`;
+                              const title = sec.sectionName !== 'Main Room' ? `${sec.sectionName} · ${planLabel}` : planLabel;
+                              return (
+                              <View key={sec.id} style={styles.secWrap}>
+                                <View style={styles.secHeader}>
+                                  <Text style={styles.secName} numberOfLines={1}>{title}</Text>
+                                  <Text style={styles.secPrice}>
+                                    {money(sec.rentPerBed)}
+                                    <Text style={styles.perMonth}> / month</Text>
+                                    {sec.depositPerBed > 0 ? <Text style={styles.perMonth}>  ·  Deposit {money(sec.depositPerBed)}</Text> : null}
+                                  </Text>
+                                </View>
+                                <View style={styles.bedOptionsRow}>
+                                  {sec.vacantBeds.map((bed) => {
+                                    const isSelected = selectedBed?.id === bed.id;
+                                    return (
+                                      <TouchableOpacity
+                                        key={bed.id}
+                                        style={[styles.bedPill, isSelected && styles.bedPillSelected]}
+                                        onPress={() => handleSelectBed(room, bed)}
+                                      >
+                                        <Ionicons
+                                          name={isApartment ? 'home-outline' : 'bed-outline'}
+                                          size={15}
+                                          color={isSelected ? '#fff' : '#15803d'}
+                                        />
+                                        <Text style={[styles.bedPillText, isSelected && styles.bedPillTextSelected]}>
+                                          {isApartment ? 'Book flat' : `${bed.bedNumber}`}
+                                          {bed.availableFrom ? ` · From ${bed.availableFrom}` : ''}
+                                        </Text>
+                                        {isSelected ? <Ionicons name="checkmark-circle" size={14} color="#fff" /> : null}
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                              </View>
+                              );
+                            })}
+                          </View>
+                        )}
                       </View>
                     )}
                   </View>
@@ -413,25 +550,6 @@ export default function PgDetails({
                   <Text style={styles.infoLabel}>Type of Stay</Text>
                   <Text style={styles.infoValue}>{pg?.stayType || 'PG'} ({pg?.unitLabel || 'Room'} units)</Text>
                 </View>
-                {pg?.locationUrl ? (
-                  <View style={{ marginTop: 8, marginBottom: 4 }}>
-                    <TouchableOpacity
-                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe', paddingVertical: 10, borderRadius: 10 }}
-                      onPress={() => Linking.openURL(pg.locationUrl!)}
-                    >
-                      <Ionicons name="map-outline" size={16} color="#2563eb" />
-                      <Text style={{ fontSize: 13, fontWeight: '800', color: '#2563eb' }}>Open in Google Maps</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null}
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Total Floors</Text>
-                  <Text style={styles.infoValue}>{pg?.totalFloors} Floors ({pg?.totalRooms} Rooms)</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Total Beds</Text>
-                  <Text style={styles.infoValue}>{pg?.totalBeds} Beds ({pg?.totalVacantBeds} Currently Vacant)</Text>
-                </View>
               </View>
             </View>
           )}
@@ -440,20 +558,29 @@ export default function PgDetails({
 
       {/* ── Sticky Bottom Bar when a Bed is Selected ── */}
       {selectedBed && selectedRoom && (
-        <View style={styles.bottomBar}>
+        <View style={[styles.bottomBar, { paddingBottom: 12 + Math.max(insets.bottom, 16) }]}>
           <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={styles.bottomBarTitle}>
-              Room {selectedRoom.number} · Bed {selectedBed.bedNumber}
+              {isApartment ? `Flat ${selectedRoom.number}` : `Room ${selectedRoom.number} · Bed ${selectedBed.bedNumber}`}
             </Text>
             <Text style={styles.bottomBarPrice}>
-              {money(selectedBed.rent)} <Text style={{ fontSize: 11, fontWeight: '400', color: colors.muted }}>/ month</Text>
+              {money(selectedBed.rent)}<Text style={{ fontSize: 11, fontWeight: '400', color: colors.muted }}>/mo</Text>
+              {(() => {
+                const selectedSection = selectedRoom?.sections.find((s) => s.vacantBeds.some((b) => b.id === selectedBed?.id));
+                const depositAmount = selectedSection?.depositPerBed;
+                return depositAmount !== undefined && depositAmount > 0 ? (
+                  <Text style={{ fontSize: 13, fontWeight: '500', color: colors.muted }}>
+                    {` · Deposit: ${money(depositAmount)}`}
+                  </Text>
+                ) : null;
+              })()}
             </Text>
           </View>
 
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <TouchableOpacity
               style={styles.whatsAppQuickBtn}
-              onPress={() => handleWhatsApp(selectedBed.bedNumber, selectedRoom.number, selectedBed.rent)}
+              onPress={() => handleWhatsApp(isApartment ? 'Flat' : selectedBed.bedNumber, selectedRoom.number, selectedBed.rent)}
             >
               <Ionicons name="logo-whatsapp" size={18} color="#fff" />
             </TouchableOpacity>
@@ -505,14 +632,8 @@ export default function PgDetails({
                 placeholderTextColor={colors.muted}
               />
 
-              <Text style={s.label}>Expected Move-in / Joining Date (YYYY-MM-DD) *</Text>
-              <TextInput
-                style={s.input}
-                value={inquiryDate}
-                onChangeText={setInquiryDate}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.muted}
-              />
+              <Text style={s.label}>Expected Move-in / Joining Date *</Text>
+              <DateField value={inquiryDate} onChange={setInquiryDate} min={today()} />
 
               <Text style={s.label}>Message / Notes (Optional)</Text>
               <TextInput
@@ -540,195 +661,82 @@ export default function PgDetails({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8fafc' },
+  container: { flex: 1, backgroundColor: '#f5f7fb' },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f2f5',
-    gap: 12,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18,
+    paddingVertical: 13, backgroundColor: '#fff', gap: 12,
+    borderBottomWidth: 1, borderBottomColor: '#edf0f5',
   },
-  backBtn: { padding: 4 },
-  headerTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
-  headerSub: { fontSize: 11, color: colors.muted, marginTop: 1 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  headerIconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#f1f5f9',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  tabItem: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-  },
+  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontSize: 17, fontWeight: '800', color: '#172033' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerIconBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' },
+  propertySummary: { marginHorizontal: 16, marginTop: 12, marginBottom: 10, padding: 15, backgroundColor: '#fff', borderRadius: 16, borderWidth: 1, borderColor: '#e8edf4' },
+  summaryLocationRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  summaryPin: { width: 36, height: 36, borderRadius: 11, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' },
+  summaryAddress: { fontSize: 13, fontWeight: '700', color: '#1e293b', lineHeight: 18 },
+  summaryType: { fontSize: 11, color: colors.muted, marginTop: 3 },
+  mapIconButton: { width: 34, height: 34, borderRadius: 10, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' },
+  summaryDivider: { height: 1, backgroundColor: '#edf0f5', marginVertical: 13 },
+  summaryStats: { flexDirection: 'row', alignItems: 'center' },
+  summaryStat: { flex: 1, alignItems: 'center', gap: 3 },
+  summaryNumber: { fontSize: 19, fontWeight: '800', color: '#172033' },
+  summaryLabel: { fontSize: 11, color: colors.muted, fontWeight: '500' },
+  tabBar: { flexDirection: 'row', backgroundColor: '#fff', borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#edf0f5' },
+  tabItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 13, borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabItemActive: { borderBottomColor: '#2563eb' },
-  tabItemText: { fontSize: 12, fontWeight: '600', color: colors.muted },
+  tabItemText: { fontSize: 11, fontWeight: '600', color: colors.muted },
   tabItemTextActive: { color: '#2563eb', fontWeight: '800' },
-  scrollContent: { padding: 14, gap: 12, paddingBottom: 90 },
-  filterRow: { gap: 8, paddingBottom: 6 },
-  subFilterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 18,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 150, gap: 12 },
+  filterRow: { gap: 8, paddingBottom: 3 },
+  subFilterChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0' },
   subFilterChipActive: { backgroundColor: '#2563eb', borderColor: '#2563eb' },
-  subFilterText: { fontSize: 12, fontWeight: '600', color: colors.muted },
-  subFilterTextActive: { color: '#fff', fontWeight: '700' },
-  roomCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  roomHeadRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  roomNum: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
-  roomSubInfo: { fontSize: 12, color: colors.muted, marginTop: 3 },
-  roomVacantBadge: {
-    backgroundColor: '#f0fdf4',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#bbf7d0',
-  },
-  roomVacantBadgeText: { fontSize: 11, fontWeight: '700', color: '#16a34a' },
-  sharingPlanBox: {
-    backgroundColor: '#f8fafc',
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-  },
-  sharingPlanTitle: { fontSize: 11, fontWeight: '700', color: colors.muted },
-  sharingPlanPill: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  sharingPlanText: { fontSize: 11, color: '#334155' },
-  vacantBedsHeading: { fontSize: 12, fontWeight: '700', color: '#0f172a', marginTop: 12, marginBottom: 8 },
-  bedsGrid: { gap: 8 },
+  subFilterText: { fontSize: 11, fontWeight: '700', color: '#64748b' },
+  subFilterTextActive: { color: '#fff' },
+  roomCard: { backgroundColor: '#fff', borderRadius: 15, borderWidth: 1, borderColor: '#e8edf4', marginBottom: 2, overflow: 'hidden' },
+  roomSummaryButton: { padding: 14 },
+  roomSummaryContent: { gap: 10 },
+  roomSummaryFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
+  vacancyCountWrap: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ecfdf3', paddingHorizontal: 9, paddingVertical: 6, borderRadius: 8 },
+  vacancyCountText: { fontSize: 11, fontWeight: '800', color: '#15803d' },
+  vacancyMeta: { fontSize: 11, fontWeight: '600', color: '#64748b' },
+  fullMeta: { fontSize: 11, fontWeight: '700', color: '#b45309' },
+  expandedRoomContent: { paddingHorizontal: 14, paddingBottom: 14, gap: 12, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
+  roomHeadRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
+  roomNum: { fontSize: 16, fontWeight: '800', color: '#172033' },
+  roomSubInfo: { fontSize: 11, color: colors.muted, marginTop: 5, lineHeight: 16 },
+  roomVacantBadge: { backgroundColor: '#ecfdf3', paddingHorizontal: 9, paddingVertical: 6, borderRadius: 8 },
+  roomVacantBadgeText: { fontSize: 10, fontWeight: '800', color: '#15803d' },
+  perMonth: { fontSize: 10, color: '#64748b', fontWeight: '500' },
+  vacantBedsHeading: { fontSize: 12, fontWeight: '800', color: '#172033', marginTop: 4, marginBottom: 6 },
+  bedsGrid: { gap: 10 },
+  bedOptionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   secWrap: { gap: 6 },
-  secName: { fontSize: 11, fontWeight: '600', color: colors.muted },
-  bedPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#f0fdf4',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#86efac',
-  },
-  bedPillSelected: {
-    backgroundColor: '#16a34a',
-    borderColor: '#15803d',
-  },
-  bedPillText: { fontSize: 12, fontWeight: '700', color: '#15803d' },
+  secHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  secName: { flexShrink: 1, fontSize: 12, fontWeight: '800', color: '#172033' },
+  secPrice: { fontSize: 13, fontWeight: '800', color: '#15803d' },
+  bedPill: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: '#f0fdf4', paddingHorizontal: 11, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: '#bbf7d0' },
+  bedPillSelected: { backgroundColor: '#15803d', borderColor: '#15803d' },
+  bedPillText: { fontSize: 11, fontWeight: '700', color: '#15803d' },
   bedPillTextSelected: { color: '#fff' },
-  amenitiesCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#e2e8f0' },
-  sectionHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
-  sectionHeaderSub: { fontSize: 12, color: colors.muted, marginTop: 2, marginBottom: 14 },
-  amenityGridFull: { gap: 10 },
-  amenityTile: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: 10,
-    backgroundColor: '#f8fafc',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-  },
-  amenityIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f0fdfa',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#ccfbf1',
-  },
-  amenityTileTitle: { fontSize: 13, fontWeight: '700', color: '#0f172a' },
-  amenityTileDesc: { fontSize: 11, color: colors.muted, marginTop: 1 },
-  infoCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#e2e8f0' },
-  infoDesc: { fontSize: 13, color: '#334155', lineHeight: 20, marginTop: 6 },
-  divider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 14 },
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  infoLabel: { fontSize: 12, color: colors.muted },
-  infoValue: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
-  bottomBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  bottomBarTitle: { fontSize: 13, fontWeight: '700', color: '#0f172a' },
-  bottomBarPrice: { fontSize: 17, fontWeight: '800', color: '#16a34a', marginTop: 1 },
-  whatsAppQuickBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#16a34a',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bookNowBtn: {
-    backgroundColor: '#2563eb',
-    paddingHorizontal: 20,
-    height: 44,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bookNowBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  amenitiesCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#e8edf4' },
+  sectionHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#172033' },
+  sectionHeaderSub: { fontSize: 12, color: colors.muted, marginTop: 4, marginBottom: 14, lineHeight: 18 },
+  amenityGridFull: { gap: 9 },
+  amenityTile: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 11, backgroundColor: '#f8fafc', borderRadius: 12, borderWidth: 1, borderColor: '#edf0f5' },
+  amenityIconCircle: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' },
+  amenityTileTitle: { fontSize: 13, fontWeight: '700', color: '#172033' },
+  amenityTileDesc: { fontSize: 11, color: colors.muted, marginTop: 3, lineHeight: 15 },
+  infoCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#e8edf4' },
+  infoDesc: { fontSize: 13, color: '#475569', lineHeight: 20, marginTop: 8 },
+  divider: { height: 1, backgroundColor: '#edf0f5', marginVertical: 16 },
+  infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
+  infoLabel: { flex: 1, fontSize: 12, color: colors.muted },
+  infoValue: { flex: 1.3, fontSize: 12, fontWeight: '700', color: '#172033', textAlign: 'right' },
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#e8edf4', paddingHorizontal: 16, paddingTop: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 10 },
+  bottomBarTitle: { fontSize: 12, fontWeight: '700', color: '#172033' },
+  bottomBarPrice: { fontSize: 17, fontWeight: '800', color: '#15803d', marginTop: 3 },
+  whatsAppQuickBtn: { width: 43, height: 43, borderRadius: 12, backgroundColor: '#16a34a', alignItems: 'center', justifyContent: 'center' },
+  bookNowBtn: { backgroundColor: '#2563eb', paddingHorizontal: 20, height: 43, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  bookNowBtnText: { color: '#fff', fontSize: 13, fontWeight: '800' },
 });

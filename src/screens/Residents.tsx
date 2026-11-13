@@ -3,7 +3,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   KeyboardAvoidingView,
+  Image,
   Linking,
   Modal,
   Platform,
@@ -17,17 +19,24 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { del, get, post } from '../api';
+import { del, errorMessage, get, PickedFile, post, upload } from '../api';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { attempt, useResource } from '../hooks';
+import { ImagePickerField, uploadPictures, ViewablePhoto } from '../images';
+import { PicturesSheet } from '../pictures';
 import { Bed, BookingRequest, Payment, Resident, Room, SharingOption, StayType } from '../types';
+import { DateField } from '../dateField';
 import { Avatar, Badge, Button, Card, Chips, Empty, FormModal, HeaderAction, PickerModal, Screen, SearchInput, colors, s } from '../ui';
 import { formatDateTime, isDate, isDateTime, money, nowDateTime, today } from '../utils';
+import { useAuth } from '../auth';
 
 const AVATAR_COLORS = ['#2563eb', '#16a34a', '#9333ea', '#ea580c', '#0d9488', '#e11d48'];
 const avatarBg = (name: string) => AVATAR_COLORS[(name?.charCodeAt(0) || 0) % AVATAR_COLORS.length];
 
-const FILTER_TABS = ['Active', 'Requests', 'With dues', 'Paid up', 'Ex-Residents', 'All'] as const;
+const FILTER_TABS = ['Active', 'With dues', 'Paid up', 'Ex-Residents', 'All'] as const;
 
 type MonthRecord = {
   monthKey: string;
@@ -73,33 +82,129 @@ function subtractDays(dateStr: string, days: number): string {
   return `${year}-${month}-${day}`;
 }
 
+interface ResidentSummary {
+  totalResidents: number;
+  totalRent: number;
+  totalDue: number;
+  withDues: number;
+  paidCount: number;
+}
+
+const ALL_FLOORS = 'All Floors';
+
+const shortFloor = (name: string) => {
+  const short = name.replace(/\s+floor$/i, '');
+  return short === 'Ground' ? 'G' : short;
+};
+
+function buildFloorNames(total?: number | null): string[] {
+  const count = total && total > 0 ? total : 3;
+  const list = ['Ground Floor'];
+  for (let i = 1; i <= count; i++) {
+    const suffix = i === 1 ? 'st' : i === 2 ? 'nd' : i === 3 ? 'rd' : 'th';
+    list.push(`${i}${suffix} Floor`);
+  }
+  return list;
+}
+
 export default function Residents({
   route,
   navigation,
 }: {
-  route?: { params?: { filter?: (typeof FILTER_TABS)[number]; residentId?: number } };
+  route?: { params?: { filter?: (typeof FILTER_TABS)[number]; residentId?: number; add?: number } };
   navigation?: any;
 }) {
-  const { data, error, loading, refreshing, refresh, reload } = useResource(async () => {
-    const [residents, rooms, allPayments, bookingRequests] = await Promise.all([
-      get<Resident[]>('/api/residents?status=ALL'),
+  const { user } = useAuth();
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<(typeof FILTER_TABS)[number]>(route?.params?.filter || 'Active');
+  const [floorFilter, setFloorFilter] = useState<string>(ALL_FLOORS);
+  const [page, setPage] = useState(0);
+  const size = 20;
+
+  const getBackendParams = () => {
+    if (filter === 'Active') return { status: 'ACTIVE', filter: '' };
+    if (filter === 'With dues') return { status: 'ACTIVE', filter: 'WITH_DUES' };
+    if (filter === 'Paid up') return { status: 'ACTIVE', filter: 'PAID_UP' };
+    if (filter === 'Ex-Residents') return { status: 'CHECKED_OUT', filter: '' };
+    return { status: 'all', filter: '' };
+  };
+
+  const { data: staticData, error, loading: staticLoading, refreshing: staticRefreshing, reload: reloadStatic } = useResource(async () => {
+    const [rooms, allPayments, summary] = await Promise.all([
       get<Room[]>('/api/rooms'),
       get<Payment[]>('/api/payments').catch(() => []),
-      get<BookingRequest[]>('/api/booking-requests?status=ALL').catch(() => []),
+      get<ResidentSummary>('/api/residents/summary').catch(() => ({ totalResidents: 0, totalRent: 0, totalDue: 0, withDues: 0, paidCount: 0 })),
     ]);
-    return { residents, rooms, allPayments, bookingRequests };
-  });
+    return { rooms, allPayments, summary };
+  }, []);
+
+  const [pagedData, setPagedData] = useState<{ content: Resident[]; totalPages: number; totalElements: number } | null>(null);
+  const [pagedLoading, setPagedLoading] = useState(false);
+
+  const fetchPagedResidents = useCallback(async () => {
+    setPagedLoading(true);
+    try {
+      const params = getBackendParams();
+      const res = await get<{ content: Resident[]; totalPages: number; totalElements: number }>(
+        `/api/residents?page=${page}&size=${size}&status=${params.status}&filter=${params.filter}&search=${encodeURIComponent(search)}&floor=${encodeURIComponent(floorFilter)}`
+      );
+      setPagedData(res);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPagedLoading(false);
+    }
+  }, [page, filter, search, floorFilter]);
+
+  useEffect(() => {
+    fetchPagedResidents();
+  }, [fetchPagedResidents]);
+
+  const loading = staticLoading || (pagedLoading && !pagedData);
+  const refreshing = staticRefreshing;
+  const reload = () => {
+    reloadStatic();
+    fetchPagedResidents();
+  };
+  const refresh = reload;
+
+  const data = staticData ? {
+    rooms: staticData.rooms,
+    allPayments: staticData.allPayments,
+    summary: staticData.summary,
+    pagedData: pagedData,
+  } : null;
+
+  const changeFilter = (newFilter: (typeof FILTER_TABS)[number]) => {
+    setFilter(newFilter);
+    setPage(0);
+  };
+
+  const changeSearch = (newSearch: string) => {
+    setSearch(newSearch);
+    setPage(0);
+  };
+
+  const changeFloor = (newFloor: string) => {
+    setFloorFilter(newFloor);
+    setPage(0);
+  };
 
   const [selectedResidentId, setSelectedResidentId] = useState<number | null>(null);
   const [showAddResident, setShowAddResident] = useState(false);
-  const [approvingRequest, setApprovingRequest] = useState<BookingRequest | null>(null);
+  // Dashboard quick action: a new `add` value opens the add-resident form.
+  const addSignal = route?.params?.add;
+  const [seenAdd, setSeenAdd] = useState<number | undefined>(undefined);
+  if (addSignal !== seenAdd) {
+    setSeenAdd(addSignal);
+    if (addSignal != null) setShowAddResident(true);
+  }
   const [movingResident, setMovingResident] = useState<Resident | null>(null);
   const [rejoiningResident, setRejoiningResident] = useState<Resident | null>(null);
   const [payForResident, setPayForResident] = useState<Resident | null>(null);
+  const [vacatingResident, setVacatingResident] = useState<Resident | null>(null);
   // Set when collecting for one billing cycle, so the form pre-fills that cycle's due instead of the total.
   const [payCycleAmount, setPayCycleAmount] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<(typeof FILTER_TABS)[number]>(route?.params?.filter || 'Active');
 
   // Opened from another screen (e.g. Today) with a specific resident: show that resident's details.
   const requestedResidentId = route?.params?.residentId;
@@ -118,40 +223,63 @@ export default function Residents({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedResidentId]);
 
-  const all = data?.residents ?? [];
+  const [fetchedResident, setFetchedResident] = useState<Resident | null>(null);
+
   const rooms = data?.rooms ?? [];
+  const floorTabs = useMemo(() => {
+    const names = buildFloorNames(user?.totalFloors);
+    for (const r of rooms) {
+      const f = r.floorName?.trim() || 'Ground Floor';
+      if (!names.includes(f)) names.push(f);
+    }
+    return [ALL_FLOORS, ...names];
+  }, [rooms, user?.totalFloors]);
+
+  const floorChips = useMemo(() => floorTabs.map(shortFloor), [floorTabs]);
+
   const allPayments = data?.allPayments ?? [];
-  const bookingRequests = data?.bookingRequests ?? [];
-  const pendingRequestsCount = bookingRequests.filter((br) => br.status === 'PENDING').length;
+  const summary = data?.summary ?? { totalResidents: 0, totalRent: 0, totalDue: 0, withDues: 0, paidCount: 0 };
 
-  const activeResidents = all.filter((r) => r.status !== 'CHECKED_OUT');
-  const exResidents = all.filter((r) => r.status === 'CHECKED_OUT');
+  const residents = data?.pagedData?.content ?? [];
+  const totalPages = data?.pagedData?.totalPages ?? 0;
+  const totalElements = data?.pagedData?.totalElements ?? 0;
 
-  const q = search.trim().toLowerCase();
-  const residents = all
-    .filter((r) =>
-      !q ||
-      r.name.toLowerCase().includes(q) ||
-      (r.phone ?? '').includes(q) ||
-      (r.roomNumber ?? '').toLowerCase().includes(q) ||
-      (r.bedNumber ?? '').toLowerCase().includes(q) ||
-      (r.sectionName ?? '').toLowerCase().includes(q)
-    )
-    .filter((r) => {
-      if (filter === 'Active') return r.status !== 'CHECKED_OUT';
-      if (filter === 'With dues') return r.due > 0 && r.status !== 'CHECKED_OUT';
-      if (filter === 'Paid up') return r.due === 0 && r.status !== 'CHECKED_OUT';
-      if (filter === 'Ex-Residents') return r.status === 'CHECKED_OUT';
-      return true;
-    });
-
-  const totalDue = activeResidents.reduce((n, r) => n + r.due, 0);
-  const totalRent = activeResidents.reduce((n, r) => n + r.rent, 0);
-  const withDues = activeResidents.filter((r) => r.due > 0).length;
-  const paidCount = activeResidents.filter((r) => r.due === 0).length;
+  const totalResidentsCount = summary.totalResidents;
+  const totalDue = summary.totalDue;
+  const totalRent = summary.totalRent;
+  const withDues = summary.withDues;
+  const paidCount = summary.paidCount;
   const openRooms = rooms.filter((r) => r.vacant > 0);
 
-  const selectedResident = all.find((r) => r.id === selectedResidentId) ?? null;
+  useEffect(() => {
+    if (!selectedResidentId) {
+      setFetchedResident(null);
+      return;
+    }
+    const found = residents.find((r) => r.id === selectedResidentId);
+    if (found) {
+      setFetchedResident(null);
+    } else {
+      get<Resident>(`/api/residents/${selectedResidentId}`)
+        .then(setFetchedResident)
+        .catch(console.error);
+    }
+  }, [selectedResidentId, residents]);
+
+  const selectedResident = residents.find((r) => r.id === selectedResidentId) || fetchedResident || null;
+
+  // Hardware/gesture back while viewing a resident should return to the residents list, not the previous tab.
+  const hasSelectedResident = selectedResidentId != null;
+  useFocusEffect(
+    useCallback(() => {
+      if (!hasSelectedResident) return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        setSelectedResidentId(null);
+        return true;
+      });
+      return () => sub.remove();
+    }, [hasSelectedResident]),
+  );
 
   const handleCall = (phone?: string | null) => {
     if (!phone) {
@@ -168,7 +296,7 @@ export default function Residents({
     }
     const clean = r.phone.replace(/[^0-9]/g, '');
     const dueText = r.due && r.due > 0 ? ` Outstanding rent due: ₹${Math.round(r.due)}.` : '';
-    const msg = `Hello ${r.name || 'Resident'}, greeting from MyPG.${dueText}`;
+    const msg = `Hello ${r.name || 'Resident'}, greeting from MyStay.${dueText}`;
 
     if (r.due > 0) {
       Alert.alert('WhatsApp Reminder', `Send payment due reminder of ₹${Math.round(r.due)} to ${r.name}?`, [
@@ -199,7 +327,7 @@ export default function Residents({
     try {
       const paymentLines = m.payments.map((p) => `• ${p.date}: ₹${Math.round(p.amount)}`).join('\n');
       const msg =
-        `*MyPG - Rent Statement*\nResident: ${r.name}\nRoom: ${r.roomNumber || '—'}\n` +
+        `*MyStay - Rent Statement*\nResident: ${r.name}\nRoom: ${r.roomNumber || '—'}\n` +
         `Period: ${m.periodLabel}\nRent for this period: ₹${Math.round(m.rent)}\n` +
         `Paid for this period: ₹${Math.round(m.paid)}\n` +
         (paymentLines ? `Payments:\n${paymentLines}\n` : '') +
@@ -225,23 +353,6 @@ export default function Residents({
       },
     ]);
 
-  const confirmVacateResident = (r: Resident) =>
-    Alert.alert(
-      'Vacate / Checkout Resident',
-      `Check out ${r.name}? Their bed/room allocation will be released, and check-out timestamp recorded as now (${formatDateTime(nowDateTime())}). Total pending due: ₹${Math.round(r.due)}.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm Checkout',
-          style: 'destructive',
-          onPress: async () => {
-            if (await attempt(() => post(`/api/residents/${r.id}/vacate?checkOutTime=${encodeURIComponent(nowDateTime())}`))) {
-              reload();
-            }
-          },
-        },
-      ]
-    );
 
   const confirmRemove = (r: Resident) =>
     Alert.alert('Remove resident', `Remove ${r.name}? Their payment history, bed allocation and login are deleted too.`, [
@@ -272,7 +383,7 @@ export default function Residents({
           }}
           onMoveRoom={() => setMovingResident(selectedResident)}
           onVacateBed={() => confirmVacateBed(selectedResident)}
-          onVacateResident={() => confirmVacateResident(selectedResident)}
+          onVacateResident={() => setVacatingResident(selectedResident)}
           onRejoin={() => setRejoiningResident(selectedResident)}
           onRemove={() => confirmRemove(selectedResident)}
           onCall={() => handleCall(selectedResident.phone)}
@@ -299,7 +410,7 @@ export default function Residents({
                       ? String(payForResident.due)
                       : String(payForResident.rent),
               },
-              { key: 'date', label: 'Date (YYYY-MM-DD)', initial: today() },
+              { key: 'date', label: 'Date', initial: today(), date: true },
             ]}
             onClose={() => {
               setPayForResident(null);
@@ -319,6 +430,49 @@ export default function Residents({
                 return false;
               setPayForResident(null);
               setPayCycleAmount(null);
+              reload();
+            }}
+          />
+        )}
+
+        {vacatingResident && (
+          <FormModal
+            visible={vacatingResident !== null}
+            title={`Check out - ${vacatingResident.name}`}
+            submitLabel="Confirm Checkout"
+            fields={[
+              { key: 'checkOutDate', label: 'Check-out Date', initial: today(), date: true },
+              {
+                key: 'returnedDeposit',
+                label: 'Returned Deposit Amount (₹)',
+                keyboard: 'number-pad',
+                initial: String(vacatingResident.securityDeposit ?? 0),
+              },
+            ]}
+            onClose={() => setVacatingResident(null)}
+            onSubmit={async (v) => {
+              const returnedDeposit = parseFloat(v.returnedDeposit) || 0;
+              if (returnedDeposit < 0) {
+                Alert.alert('Invalid', 'Returned deposit cannot be negative.');
+                return false;
+              }
+              if (!isDate(v.checkOutDate)) {
+                Alert.alert('Invalid', 'Check check-out date.');
+                return false;
+              }
+              let queryParams = `checkOutDate=${encodeURIComponent(v.checkOutDate)}&returnedDeposit=${returnedDeposit}`;
+              if (v.checkOutDate === today()) {
+                queryParams += `&checkOutTime=${encodeURIComponent(nowDateTime())}`;
+              }
+
+              if (
+                !(await attempt(() =>
+                  post(`/api/residents/${vacatingResident.id}/vacate?${queryParams}`)
+                ))
+              )
+                return false;
+
+              setVacatingResident(null);
               reload();
             }}
           />
@@ -356,6 +510,7 @@ export default function Residents({
   return (
     <Screen
       title="Residents"
+      scrollable={false}
       action={<HeaderAction label="Add" icon="person-add" onPress={() => setShowAddResident(true)} />}
       loading={loading}
       error={error}
@@ -380,7 +535,7 @@ export default function Residents({
           <View style={resStyles.kpiIconWrap}>
             <Ionicons name="people" size={16} color="#16a34a" />
           </View>
-          <Text style={resStyles.kpiVal}>{all.length}</Text>
+          <Text style={resStyles.kpiVal}>{totalResidentsCount}</Text>
           <Text style={resStyles.kpiLbl}>Total Residents</Text>
         </View>
 
@@ -410,12 +565,12 @@ export default function Residents({
           <TextInput
             style={resStyles.searchInput}
             value={search}
-            onChangeText={setSearch}
+            onChangeText={changeSearch}
             placeholder="Search name, phone, room or bed..."
             placeholderTextColor={colors.muted}
           />
           {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch('')}>
+            <TouchableOpacity onPress={() => changeSearch('')}>
               <Ionicons name="close-circle" size={16} color={colors.muted} />
             </TouchableOpacity>
           )}
@@ -425,178 +580,46 @@ export default function Residents({
         </TouchableOpacity>
       </View>
 
+      {/* ── Floor Filter Chips ── */}
+      <Chips
+        options={floorChips}
+        value={shortFloor(floorFilter)}
+        onChange={(val) => {
+          const fullFloorName = floorTabs.find((f) => shortFloor(f) === val) || ALL_FLOORS;
+          changeFloor(fullFloorName);
+        }}
+      />
+
       {/* ── Filter Tabs Row ── */}
       <View style={resStyles.tabFilterRow}>
         <View style={resStyles.filterTabsList}>
           {FILTER_TABS.map((tab) => {
             const active = filter === tab;
-            const badgeLabel = tab === 'Requests' && pendingRequestsCount > 0 ? ` (${pendingRequestsCount})` : '';
             return (
               <TouchableOpacity
                 key={tab}
-                style={[resStyles.filterPill, active && resStyles.filterPillActive, tab === 'Requests' && pendingRequestsCount > 0 && !active && { borderColor: '#fed7aa', backgroundColor: '#fff7ed' }]}
-                onPress={() => setFilter(tab)}
+                style={[resStyles.filterPill, active && resStyles.filterPillActive]}
+                onPress={() => changeFilter(tab)}
               >
-                <Text style={[resStyles.filterPillText, active && resStyles.filterPillTextActive, tab === 'Requests' && pendingRequestsCount > 0 && !active && { color: '#ea580c', fontWeight: '800' }]}>
-                  {tab}{badgeLabel}
-                </Text>
+                <Text style={[resStyles.filterPillText, active && resStyles.filterPillTextActive]}>{tab}</Text>
               </TouchableOpacity>
             );
           })}
         </View>
       </View>
 
-      {filter === 'Requests' ? (
-        /* ── Bed Booking Requests View ── */
-        <View style={{ gap: 10, paddingBottom: 24 }}>
-          {bookingRequests.length === 0 && (
-            <Empty text="No booking requests yet. When prospective residents request a bed in the app, their requests will appear here for your review and approval." />
-          )}
-          {bookingRequests
-            .filter((br) => {
-              if (!q) return true;
-              return (
-                br.name.toLowerCase().includes(q) ||
-                (br.mobile ?? '').includes(q) ||
-                (br.roomNumber ?? '').toLowerCase().includes(q) ||
-                (br.bedNumber ?? '').toLowerCase().includes(q)
-              );
-            })
-            .map((br) => {
-              const isPending = br.status === 'PENDING';
-              const isApproved = br.status === 'APPROVED';
-              const statusColor = isPending ? '#ea580c' : isApproved ? '#16a34a' : '#dc2626';
-              const statusLabel = isPending ? 'Pending Approval' : isApproved ? 'Approved & Assigned' : 'Rejected';
+        <ScrollView
+          style={{ flex: 1, marginTop: 10 }}
+          contentContainerStyle={{ paddingBottom: 32 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {data && totalResidentsCount === 0 && <Empty text="No residents yet. Add a room first, then add residents." />}
+          {totalResidentsCount > 0 && residents.length === 0 && <Empty text="No residents match your filter." />}
 
-              return (
-                <View key={br.id} style={resStyles.residentCard}>
-                  {/* Left: Avatar / Status Icon */}
-                  <View style={[resStyles.avatar, { backgroundColor: isPending ? '#ffedd5' : isApproved ? '#dcfce7' : '#fee2e2' }]}>
-                    <Ionicons
-                      name={isPending ? 'time' : isApproved ? 'checkmark-circle' : 'close-circle'}
-                      size={22}
-                      color={statusColor}
-                    />
-                  </View>
-
-                  {/* Center: Details */}
-                  <View style={resStyles.info}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }}>
-                      <Text style={resStyles.name}>{br.name}</Text>
-                      <Badge text={statusLabel} color={statusColor} />
-                    </View>
-
-                    <View style={resStyles.locationRow}>
-                      <Ionicons name="bed-outline" size={13} color={colors.muted} />
-                      <Text style={resStyles.locationText}>
-                        Requested: {br.roomNumber ? `Room ${br.roomNumber}` : 'Any Room'}
-                        {br.sectionName ? ` · ${br.sectionName}` : ''}
-                        {br.bedNumber ? ` · Bed ${br.bedNumber}` : ''}
-                      </Text>
-                    </View>
-
-                    <View style={resStyles.locationRow}>
-                      <Ionicons name="calendar-outline" size={13} color={colors.muted} />
-                      <Text style={resStyles.locationText}>
-                        Expected Move-in: {br.expectedJoinDate || 'Immediate'}
-                      </Text>
-                    </View>
-
-                    {br.rent ? (
-                      <View style={resStyles.locationRow}>
-                        <Ionicons name="pricetag-outline" size={13} color={colors.muted} />
-                        <Text style={resStyles.locationText}>
-                          Rent: {money(br.rent)}/mo {br.deposit ? `· Deposit: ${money(br.deposit)}` : ''}
-                        </Text>
-                      </View>
-                    ) : null}
-
-                    {br.mobile ? (
-                      <View style={resStyles.locationRow}>
-                        <Ionicons name="call-outline" size={13} color={colors.muted} />
-                        <Text style={resStyles.locationText}>{br.mobile}</Text>
-                      </View>
-                    ) : null}
-
-                    {br.message ? (
-                      <View style={{ backgroundColor: '#f8fafc', padding: 8, borderRadius: 8, marginTop: 4, borderWidth: 1, borderColor: '#e2e8f0' }}>
-                        <Text style={{ fontSize: 11, color: '#475569', fontStyle: 'italic' }}>"{br.message}"</Text>
-                      </View>
-                    ) : null}
-
-                    {/* Quick Action Buttons */}
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                      {br.mobile ? (
-                        <TouchableOpacity
-                          style={resStyles.smallActionBtn}
-                          onPress={() => handleCall(br.mobile)}
-                        >
-                          <Ionicons name="call" size={13} color="#16a34a" />
-                          <Text style={resStyles.smallActionBtnText}>Call</Text>
-                        </TouchableOpacity>
-                      ) : null}
-
-                      {br.mobile ? (
-                        <TouchableOpacity
-                          style={resStyles.smallActionBtn}
-                          onPress={() => {
-                            const clean = br.mobile.replace(/[^0-9]/g, '');
-                            const msg = `Hello ${br.name}, regarding your PG bed booking request on MyPG...`;
-                            Linking.openURL(`https://wa.me/91${clean}?text=${encodeURIComponent(msg)}`);
-                          }}
-                        >
-                          <Ionicons name="logo-whatsapp" size={13} color="#16a34a" />
-                          <Text style={resStyles.smallActionBtnText}>WhatsApp</Text>
-                        </TouchableOpacity>
-                      ) : null}
-
-                      {isPending && (
-                        <>
-                          <TouchableOpacity
-                            style={[resStyles.smallActionBtn, { backgroundColor: '#16a34a', borderColor: '#16a34a' }]}
-                            onPress={() => setApprovingRequest(br)}
-                          >
-                            <Ionicons name="checkmark-circle" size={14} color="#fff" />
-                            <Text style={[resStyles.smallActionBtnText, { color: '#fff', fontWeight: '800' }]}>
-                              Approve & Assign Bed
-                            </Text>
-                          </TouchableOpacity>
-
-                          <TouchableOpacity
-                            style={[resStyles.smallActionBtn, { backgroundColor: '#fee2e2', borderColor: '#fca5a5' }]}
-                            onPress={() => {
-                              Alert.alert('Reject Booking Request', `Reject booking request from ${br.name}?`, [
-                                { text: 'Cancel', style: 'cancel' },
-                                {
-                                  text: 'Reject',
-                                  style: 'destructive',
-                                  onPress: async () => {
-                                    if (await attempt(() => post(`/api/booking-requests/${br.id}/reject`, {}))) {
-                                      reload();
-                                    }
-                                  },
-                                },
-                              ]);
-                            }}
-                          >
-                            <Ionicons name="close" size={13} color="#dc2626" />
-                            <Text style={[resStyles.smallActionBtnText, { color: '#dc2626' }]}>Reject</Text>
-                          </TouchableOpacity>
-                        </>
-                      )}
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-        </View>
-      ) : (
-        /* ── Standard Residents List ── */
-        <>
-          {data && all.length === 0 && <Empty text="No residents yet. Add a room first, then add residents." />}
-          {all.length > 0 && residents.length === 0 && <Empty text="No residents match your filter." />}
-
-          <View style={{ gap: 8, paddingBottom: 20 }}>
+          <View style={[{ gap: 8, paddingBottom: 20 }, pagedLoading && { opacity: 0.6 }]}>
+            {pagedLoading && (
+              <ActivityIndicator size="small" color="#2563eb" style={{ marginVertical: 12 }} />
+            )}
             {residents.map((r) => {
           const hasDue = r.due > 0;
           const initial = (r.name || '?')[0].toUpperCase();
@@ -615,8 +638,14 @@ export default function Residents({
               onPress={() => setSelectedResidentId(r.id)}
             >
               {/* Left: Avatar */}
-              <View style={[resStyles.avatar, { backgroundColor: avColor }]}>
-                <Text style={resStyles.avatarText}>{initial}</Text>
+              <View style={[resStyles.avatar, { backgroundColor: avColor, overflow: 'hidden' }]}>
+                {r.photoUrl ? (
+                  <ViewablePhoto uri={r.photoUrl}>
+                    <Image source={{ uri: r.photoUrl }} style={{ width: '100%', height: '100%' }} />
+                  </ViewablePhoto>
+                ) : (
+                  <Text style={resStyles.avatarText}>{initial}</Text>
+                )}
               </View>
 
               {/* Center: Info */}
@@ -629,6 +658,12 @@ export default function Residents({
                     <Badge
                       text={r.sharingType === 'PRIVATE' ? '1-Sharing' : r.sharingType === 'TWO_SHARING' ? '2-Sharing' : r.sharingType === 'THREE_SHARING' ? '3-Sharing' : r.sharingType}
                       color="#0284c7"
+                    />
+                  ) : null}
+                  {r.status !== 'CHECKED_OUT' && (r.noticeStatus === 'REQUESTED' || r.noticeStatus === 'APPROVED') ? (
+                    <Badge
+                      text={`${r.noticeStatus === 'REQUESTED' ? 'Notice' : 'Leaving'} ${r.vacateOn}`}
+                      color={r.noticeStatus === 'REQUESTED' ? colors.warn : colors.bad}
                     />
                   ) : null}
                 </View>
@@ -708,8 +743,33 @@ export default function Residents({
           );
         })}
           </View>
-        </>
-      )}
+
+          {totalPages > 1 && (
+            <View style={resStyles.paginationRow}>
+              <TouchableOpacity
+                style={[resStyles.pageBtn, page === 0 && resStyles.pageBtnDisabled]}
+                disabled={page === 0}
+                onPress={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                <Ionicons name="chevron-back" size={16} color={page === 0 ? colors.muted : '#1f2328'} />
+                <Text style={[resStyles.pageBtnText, page === 0 && resStyles.pageBtnTextDisabled]}>Prev</Text>
+              </TouchableOpacity>
+              
+              <Text style={resStyles.pageInfoText}>
+                Page {page + 1} of {totalPages}
+              </Text>
+
+              <TouchableOpacity
+                style={[resStyles.pageBtn, page >= totalPages - 1 && resStyles.pageBtnDisabled]}
+                disabled={page >= totalPages - 1}
+                onPress={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              >
+                <Text style={[resStyles.pageBtnText, page >= totalPages - 1 && resStyles.pageBtnTextDisabled]}>Next</Text>
+                <Ionicons name="chevron-forward" size={16} color={page >= totalPages - 1 ? colors.muted : '#1f2328'} />
+              </TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
 
       {showAddResident && (
         <AddResidentModal
@@ -723,19 +783,6 @@ export default function Residents({
         />
       )}
 
-      {approvingRequest && (
-        <AddResidentModal
-          visible={true}
-          rooms={rooms}
-          initialRequest={approvingRequest}
-          onClose={() => setApprovingRequest(null)}
-          onAdded={() => {
-            setApprovingRequest(null);
-            reload();
-          }}
-        />
-      )}
-
       {payForResident && (
         <FormModal
           visible={payForResident !== null}
@@ -743,7 +790,7 @@ export default function Residents({
           submitLabel="Record"
           fields={[
             { key: 'amount', label: 'Amount (₹)', keyboard: 'number-pad', initial: payForResident.due > 0 ? String(payForResident.due) : String(payForResident.rent) },
-            { key: 'date', label: 'Date (YYYY-MM-DD)', initial: today() },
+            { key: 'date', label: 'Date', initial: today(), date: true },
           ]}
           onClose={() => setPayForResident(null)}
           onSubmit={async (v) => {
@@ -826,8 +873,64 @@ function ResidentDetailView({
   refreshing: boolean;
   onRefresh: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<'months' | 'pending' | 'payments'>('months');
+  const [activeTab, setActiveTab] = useState<'months' | 'pending' | 'payments' | 'attachments'>('months');
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null);
+  const [picturesOpen, setPicturesOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const chooseAttachment = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/*'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets || result.assets.length === 0) return;
+      const asset = result.assets[0];
+      const pickedFile = {
+        uri: asset.uri,
+        name: asset.name || 'attachment.pdf',
+        type: asset.mimeType || 'application/pdf',
+      };
+      uploadAttachment(pickedFile);
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not pick file.');
+    }
+  };
+
+  const uploadAttachment = async (file: PickedFile) => {
+    setBusy(true);
+    try {
+      await upload(`/api/attachments/resident/${resident.id}`, file);
+      Alert.alert('Success', 'Attachment uploaded successfully.');
+      onRefresh();
+    } catch (e) {
+      Alert.alert('Upload failed', errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteAttachment = async () => {
+    Alert.alert('Confirm Delete', 'Are you sure you want to delete this attachment?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setBusy(true);
+          try {
+            await del(`/api/attachments/resident/${resident.id}`);
+            Alert.alert('Success', 'Attachment deleted successfully.');
+            onRefresh();
+          } catch (e) {
+            Alert.alert('Delete failed', e instanceof Error ? e.message : 'Could not delete attachment');
+          } finally {
+            setBusy(false);
+          }
+        }
+      }
+    ]);
+  };
 
   // Generate billing cycles based on resident's joining date to current date
   const generateMonthlyBreakdown = (): MonthRecord[] => {
@@ -868,7 +971,11 @@ function ResidentDetailView({
     // Allocate payments FIFO across cycles
     for (let i = 0; i < chronological.length; i++) {
       const item = chronological[i];
-      const monthRent = resident.rent;
+      // Latest scheduled rent change that has started by this cycle, else the base rent.
+      let monthRent = resident.baseRent ?? resident.rent;
+      for (const c of resident.rentChanges ?? []) {
+        if (c.effectiveFrom <= item.startDate) monthRent = c.rent;
+      }
       const prevBilled = runningBilled;
       runningBilled += monthRent;
 
@@ -967,6 +1074,14 @@ function ResidentDetailView({
             )}
             <TouchableOpacity
               style={detailStyles.headerActionBtn}
+              onPress={() => setPicturesOpen(true)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="images-outline" size={20} color="#2563eb" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={detailStyles.headerActionBtn}
               onPress={onRemove}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               activeOpacity={0.7}
@@ -977,6 +1092,11 @@ function ResidentDetailView({
         </View>
       </View>
 
+      <PicturesSheet
+        target={picturesOpen ? { type: 'resident', id: resident.id, title: resident.name } : null}
+        onClose={() => setPicturesOpen(false)}
+      />
+
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={detailStyles.scrollContent}
@@ -985,8 +1105,14 @@ function ResidentDetailView({
         {/* ── Profile Box ── */}
         <View style={detailStyles.profileCard}>
           <View style={detailStyles.profileTopRow}>
-            <View style={[detailStyles.avatar, { backgroundColor: avBg }]}>
-              <Text style={detailStyles.avatarText}>{initial}</Text>
+            <View style={[detailStyles.avatar, { backgroundColor: avBg, overflow: 'hidden' }]}>
+              {resident.photoUrl ? (
+                <ViewablePhoto uri={resident.photoUrl}>
+                  <Image source={{ uri: resident.photoUrl }} style={{ width: '100%', height: '100%' }} />
+                </ViewablePhoto>
+              ) : (
+                <Text style={detailStyles.avatarText}>{initial}</Text>
+              )}
             </View>
 
             <View style={detailStyles.profileCenter}>
@@ -1002,16 +1128,6 @@ function ResidentDetailView({
                   >
                     <Ionicons name="swap-horizontal" size={11} color="#2563eb" />
                     <Text style={detailStyles.changeRoomPillText}>Change Room</Text>
-                  </TouchableOpacity>
-                )}
-                {resident.status !== 'CHECKED_OUT' && resident.bedId != null && onVacateBed && (
-                  <TouchableOpacity
-                    style={detailStyles.vacateBedPill}
-                    onPress={onVacateBed}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="close-circle-outline" size={11} color="#e11d48" />
-                    <Text style={detailStyles.vacateBedPillText}>Vacate Bed</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1074,6 +1190,17 @@ function ResidentDetailView({
                   : ` ${money(resident.rent)}/mo`}
               </Text>
             </View>
+            {resident.stayType !== 'DAILY' &&
+              (resident.rentChanges ?? [])
+                .filter((c) => c.effectiveFrom > today())
+                .map((c) => (
+                  <View key={c.effectiveFrom} style={[detailStyles.sincePill, { backgroundColor: '#fffbeb', borderColor: '#fde68a' }]}>
+                    <Ionicons name="trending-up-outline" size={11} color="#b45309" />
+                    <Text style={[detailStyles.sincePillText, { color: '#b45309' }]}>
+                      {` ${money(c.rent)}/mo from ${c.effectiveFrom}`}
+                    </Text>
+                  </View>
+                ))}
           </View>
 
           {/* ── Billing Summary — 3 Amount Cards ── */}
@@ -1153,7 +1280,7 @@ function ResidentDetailView({
             >
               <Ionicons name="calendar" size={14} color={activeTab === 'months' ? '#ffffff' : colors.muted} />
               <Text style={[detailStyles.segmentBtnText, activeTab === 'months' && detailStyles.segmentBtnTextActive]}>
-                Stay Summary
+                Summary
               </Text>
             </TouchableOpacity>
           ) : (
@@ -1162,9 +1289,9 @@ function ResidentDetailView({
                 style={[detailStyles.segmentBtn, activeTab === 'months' && detailStyles.segmentBtnActive]}
                 onPress={() => setActiveTab('months')}
               >
-                <Ionicons name="calendar" size={14} color={activeTab === 'months' ? '#ffffff' : colors.muted} />
+                <Ionicons name="calendar" size={13} color={activeTab === 'months' ? '#ffffff' : colors.muted} />
                 <Text style={[detailStyles.segmentBtnText, activeTab === 'months' && detailStyles.segmentBtnTextActive]}>
-                  All Months ({monthlyRecords.length})
+                  Months ({monthlyRecords.length})
                 </Text>
               </TouchableOpacity>
 
@@ -1172,9 +1299,9 @@ function ResidentDetailView({
                 style={[detailStyles.segmentBtn, activeTab === 'pending' && detailStyles.segmentBtnActive]}
                 onPress={() => setActiveTab('pending')}
               >
-                <Ionicons name="time-outline" size={14} color={activeTab === 'pending' ? '#ffffff' : colors.muted} />
+                <Ionicons name="time-outline" size={13} color={activeTab === 'pending' ? '#ffffff' : colors.muted} />
                 <Text style={[detailStyles.segmentBtnText, activeTab === 'pending' && detailStyles.segmentBtnTextActive]}>
-                  Pending Dues ({pendingMonths.length})
+                  Pending ({pendingMonths.length})
                 </Text>
               </TouchableOpacity>
             </>
@@ -1184,10 +1311,17 @@ function ResidentDetailView({
             style={[detailStyles.segmentBtn, activeTab === 'payments' && detailStyles.segmentBtnActive]}
             onPress={() => setActiveTab('payments')}
           >
-            <Ionicons name="card-outline" size={14} color={activeTab === 'payments' ? '#ffffff' : colors.muted} />
+            <Ionicons name="card-outline" size={13} color={activeTab === 'payments' ? '#ffffff' : colors.muted} />
             <Text style={[detailStyles.segmentBtnText, activeTab === 'payments' && detailStyles.segmentBtnTextActive]}>
               Payments ({payments.length})
             </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[detailStyles.segmentBtn, activeTab === 'attachments' && detailStyles.segmentBtnActive, { flex: 0.5 }]}
+            onPress={() => setActiveTab('attachments')}
+          >
+            <Ionicons name="attach" size={18} color={activeTab === 'attachments' ? '#ffffff' : colors.muted} />
           </TouchableOpacity>
         </View>
 
@@ -1423,6 +1557,80 @@ function ResidentDetailView({
             ))}
           </View>
         )}
+
+        {/* ── TAB 4: ATTACHMENTS ── */}
+        {activeTab === 'attachments' && (
+          <View style={{ gap: 8 }}>
+            <View style={detailStyles.sectionHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="document-text" size={16} color="#2563eb" />
+                <Text style={detailStyles.sectionHeaderTitle}>Rental Agreement & Documents</Text>
+              </View>
+            </View>
+
+            {busy ? (
+              <View style={detailStyles.emptyBox}>
+                <ActivityIndicator size="large" color="#2563eb" />
+                <Text style={{ fontSize: 13, color: colors.muted, marginTop: 8 }}>Processing file...</Text>
+              </View>
+            ) : resident.attachmentUrl ? (
+              <Card style={{ padding: 16, backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderWidth: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 8, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="file-tray-full" size={24} color="#2563eb" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a' }}>Rental Agreement</Text>
+                    <Text style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>Uploaded document / contract</Text>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+                  <TouchableOpacity
+                    style={[detailStyles.bottomSecBtn, { flex: 1, height: 38, borderColor: '#cbd5e1', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }]}
+                    onPress={() => resident.attachmentUrl && Linking.openURL(resident.attachmentUrl)}
+                  >
+                    <Ionicons name="eye" size={16} color="#0f172a" />
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: '#0f172a' }}>View File</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[detailStyles.bottomSecBtn, { flex: 1, height: 38, borderColor: colors.bad, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }]}
+                    onPress={deleteAttachment}
+                  >
+                    <Ionicons name="trash" size={16} color={colors.bad} />
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: colors.bad }}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              </Card>
+            ) : (
+              <View style={detailStyles.emptyBox}>
+                <Ionicons name="document-attach-outline" size={40} color={colors.muted} />
+                <Text style={{ fontSize: 13, color: colors.muted, marginTop: 6, textAlign: 'center' }}>
+                  No agreements or files attached yet.
+                </Text>
+                <TouchableOpacity
+                  style={{
+                    marginTop: 12,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                    backgroundColor: '#eff6ff',
+                    paddingHorizontal: 14,
+                    paddingVertical: 8,
+                    borderRadius: 6,
+                    borderWidth: 1,
+                    borderColor: '#bfdbfe'
+                  }}
+                  onPress={chooseAttachment}
+                >
+                  <Ionicons name="cloud-upload" size={16} color="#2563eb" />
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#2563eb' }}>Upload Document</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* ── Fixed Bottom Actions Bar ── */}
@@ -1615,6 +1823,43 @@ const resStyles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#0f172a',
+  },
+  paginationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  pageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    gap: 4,
+  },
+  pageBtnDisabled: {
+    backgroundColor: '#f1f5f9',
+    borderColor: '#e2e8f0',
+  },
+  pageBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  pageBtnTextDisabled: {
+    color: colors.muted,
+  },
+  pageInfoText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#334155',
   },
 });
 
@@ -1998,7 +2243,9 @@ const detailStyles = StyleSheet.create({
   bottomPrimBtnText: { fontSize: 13, fontWeight: '700', color: '#ffffff' },
 });
 
-function AddResidentModal({
+const compactLabel = { marginTop: 8, marginBottom: 4 } as const;
+
+export function AddResidentModal({
   visible,
   rooms,
   initialRequest,
@@ -2145,6 +2392,7 @@ function AddResidentModal({
   const [stayType, setStayType] = useState<StayType>('MONTHLY');
   const [name, setName] = useState(initialRequest?.name ?? '');
   const [phone, setPhone] = useState(initialRequest?.mobile ?? '');
+  const [aadhaar, setAadhaar] = useState('');
   const [joinedOn, setJoinedOn] = useState(initialRequest?.expectedJoinDate || today());
   const [checkInTime, setCheckInTime] = useState(nowDateTime().replace('T', ' '));
   const [checkOutDate, setCheckOutDate] = useState('');
@@ -2154,6 +2402,8 @@ function AddResidentModal({
     initialRequest?.deposit !== undefined && initialRequest?.deposit !== null ? String(initialRequest.deposit) : ''
   );
   const [dailyRate, setDailyRate] = useState('');
+  const [photo, setPhoto] = useState<PickedFile[]>([]);
+  const [idCard, setIdCard] = useState<PickedFile[]>([]);
   const [busy, setBusy] = useState(false);
 
   // Sync pricing defaults when section or room changes (unless initialRequest had explicit values)
@@ -2164,8 +2414,10 @@ function AddResidentModal({
       } else if (currentRoom && currentRoom.rent > 0) {
         setRent(String(currentRoom.rent));
       }
-      if (currentSection && currentSection.depositPerBed !== undefined) {
+      if (currentSection && currentSection.depositPerBed !== undefined && currentSection.depositPerBed !== null) {
         setSecurityDeposit(String(currentSection.depositPerBed));
+      } else if (currentRoom?.sharingOptions?.[0]?.depositPerBed !== undefined && currentRoom?.sharingOptions?.[0]?.depositPerBed !== null) {
+        setSecurityDeposit(String(currentRoom.sharingOptions[0].depositPerBed));
       } else {
         setSecurityDeposit('0');
       }
@@ -2229,8 +2481,13 @@ function AddResidentModal({
       }
     }
     const cleanPhone = phone.trim();
-    if (cleanPhone && !/^\d{10,15}$/.test(cleanPhone)) {
-      Alert.alert('Invalid Mobile', 'Please enter a valid 10-15 digit mobile number.');
+    if (!/^\d{10,15}$/.test(cleanPhone)) {
+      Alert.alert('Mobile number required', 'Please enter a valid 10-15 digit mobile number. It is the resident\'s login.');
+      return;
+    }
+    const cleanAadhaar = aadhaar.replace(/\s/g, '');
+    if (!/^\d{12}$/.test(cleanAadhaar)) {
+      Alert.alert('Aadhaar number required', 'Please enter the 12-digit Aadhaar number. Its last 4 digits are the first password.');
       return;
     }
 
@@ -2259,11 +2516,13 @@ function AddResidentModal({
       const cleanCheckOutIso = stayType === 'DAILY' && checkOutTime.trim() ? checkOutTime.trim().replace(' ', 'T') : null;
       const finalJoinedOn = stayType === 'DAILY' ? cleanCheckInIso!.slice(0, 10) : joinedOn;
 
-      const ok = await attempt(() =>
-        initialRequest
-          ? post(`/api/booking-requests/${initialRequest.id}/approve`, {
+      let created: { id: number } | null = null;
+      const ok = await attempt(async () => {
+        created = await (initialRequest
+          ? post<{ id: number }>(`/api/booking-requests/${initialRequest.id}/approve`, {
               name: name.trim(),
-              phone: cleanPhone || null,
+              phone: cleanPhone,
+              aadhaar: cleanAadhaar,
               roomId: currentRoom.id,
               sectionId: currentSection?.id ?? null,
               bedId: finalBedId,
@@ -2271,9 +2530,10 @@ function AddResidentModal({
               securityDeposit: parseFloat(securityDeposit) || 0,
               joinedOn: finalJoinedOn,
             })
-          : post('/api/residents', {
+          : post<{ id: number }>('/api/residents', {
               name: name.trim(),
-              phone: cleanPhone || null,
+              phone: cleanPhone,
+              aadhaar: cleanAadhaar,
               roomId: currentRoom.id,
               sectionId: currentSection?.id ?? null,
               bedId: finalBedId,
@@ -2286,9 +2546,19 @@ function AddResidentModal({
               rentOverride: rentAmount,
               securityDeposit: parseFloat(securityDeposit) || 0,
               joinedOn: finalJoinedOn,
-            })
-      );
+            }));
+      });
       if (ok) {
+        const residentId = (created as { id: number } | null)?.id;
+        const problems = residentId
+          ? [
+              photo.length ? await uploadPictures(`/api/media/resident/${residentId}?kind=PHOTO`, photo) : null,
+              idCard.length ? await uploadPictures(`/api/media/resident/${residentId}?kind=ID_CARD`, idCard) : null,
+            ].filter(Boolean)
+          : [];
+        if (problems.length) Alert.alert('Resident added', problems.join('\n\n'));
+        setPhoto([]);
+        setIdCard([]);
         if (initialRequest) {
           Alert.alert('Booking Approved', `Resident ${name.trim()} has been assigned to Room ${currentRoom.number}.`);
         }
@@ -2319,7 +2589,7 @@ function AddResidentModal({
 
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.sheetBody}>
             {/* ── 1. FLOOR SELECTION DROPDOWN ── */}
-            <Text style={s.label}>1. Select Floor *</Text>
+            <Text style={[s.label, compactLabel, { marginTop: 0 }]}>1. Select Floor *</Text>
             <View style={allocStyles.card}>
               <TouchableOpacity
                 style={allocStyles.selectorHeader}
@@ -2393,7 +2663,7 @@ function AddResidentModal({
             </View>
 
             {/* ── 2. ROOM SELECTION DROPDOWN ── */}
-            <Text style={s.label}>2. Select Room (on {selectedFloor}) *</Text>
+            <Text style={[s.label, compactLabel]}>2. Select Room (on {selectedFloor}) *</Text>
             <View style={allocStyles.card}>
               <TouchableOpacity
                 style={allocStyles.selectorHeader}
@@ -2500,7 +2770,7 @@ function AddResidentModal({
             </View>
 
             {/* ── 3. SECTION SELECTION DROPDOWN ── */}
-            <Text style={s.label}>3. Select Room Section / Bedroom *</Text>
+            <Text style={[s.label, compactLabel]}>3. Select Room Section / Bedroom *</Text>
             <View style={allocStyles.card}>
               <TouchableOpacity
                 style={allocStyles.selectorHeader}
@@ -2616,8 +2886,8 @@ function AddResidentModal({
             {/* ── 4. BED SELECTION CHIPS ── */}
             {vacantBeds.length > 0 && (
               <>
-                <Text style={s.label}>Assign Bed in {currentSection ? currentSection.sectionName : 'Room'}</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                <Text style={[s.label, compactLabel]}>Assign Bed in {currentSection ? currentSection.sectionName : 'Room'}</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 4 }}>
                   <Pressable
                     onPress={() => setSelectedBedId(null)}
                     style={[s.chip, selectedBedId === null && s.chipOn]}
@@ -2642,8 +2912,8 @@ function AddResidentModal({
             )}
 
             {/* ── 5. RESIDENT INFORMATION ── */}
-            <Text style={[s.label, { marginTop: 4 }]}>Stay Duration / Billing Type *</Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+            <Text style={[s.label, compactLabel]}>Stay Duration / Billing Type *</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
               <Pressable
                 style={[s.chip, stayType === 'MONTHLY' && s.chipOn, { flex: 1, paddingVertical: 9 }]}
                 onPress={() => setStayType('MONTHLY')}
@@ -2662,7 +2932,7 @@ function AddResidentModal({
               </Pressable>
             </View>
 
-            <Text style={s.label}>Full Name *</Text>
+            <Text style={[s.label, compactLabel]}>Full Name *</Text>
             <TextInput
               style={s.input}
               value={name}
@@ -2671,7 +2941,7 @@ function AddResidentModal({
               placeholderTextColor={colors.muted}
             />
 
-            <Text style={s.label}>Mobile Number (Unique Resident Identifier)</Text>
+            <Text style={[s.label, compactLabel]}>Mobile Number * (used as the login)</Text>
             <TextInput
               style={s.input}
               value={phone}
@@ -2682,11 +2952,29 @@ function AddResidentModal({
               placeholderTextColor={colors.muted}
             />
 
+            <Text style={[s.label, compactLabel]}>Aadhaar Number *</Text>
+            <TextInput
+              style={s.input}
+              value={aadhaar}
+              onChangeText={(v) => setAadhaar(v.replace(/\D/g, ''))}
+              keyboardType="number-pad"
+              maxLength={12}
+              placeholder="12 digits"
+              placeholderTextColor={colors.muted}
+            />
+            <Text style={[s.muted, { fontSize: 11, marginTop: 4 }]}>
+              A login is created: username is the mobile number, password is the last 4 digits of the Aadhaar number. The
+              resident must change it at first login. The Aadhaar number itself is not saved.
+            </Text>
+
+            <ImagePickerField label="Resident photo (optional)" files={photo} onChange={setPhoto} />
+            <ImagePickerField label="ID card - Aadhaar, licence, etc. (optional)" files={idCard} onChange={setIdCard} />
+
             {stayType === 'DAILY' ? (
               <>
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.label}>Daily Rate (₹/day) *</Text>
+                    <Text style={[s.label, compactLabel]}>Daily Rate (₹/day) *</Text>
                     <TextInput
                       style={s.input}
                       value={dailyRate}
@@ -2696,31 +2984,26 @@ function AddResidentModal({
                     />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.label}>Check-in Date & Time *</Text>
-                    <TextInput
-                      style={s.input}
-                      value={checkInTime}
-                      onChangeText={setCheckInTime}
-                      placeholder="YYYY-MM-DD HH:mm"
-                      placeholderTextColor={colors.muted}
-                    />
+                    <Text style={[s.label, compactLabel]}>Check-in Date & Time *</Text>
+                    <DateField value={checkInTime} onChange={setCheckInTime} time />
                   </View>
                 </View>
 
-                <Text style={s.label}>Expected Check-out Date & Time (Optional)</Text>
-                <TextInput
-                  style={s.input}
+                <Text style={[s.label, compactLabel]}>Expected Check-out Date & Time (Optional)</Text>
+                <DateField
                   value={checkOutTime}
-                  onChangeText={setCheckOutTime}
-                  placeholder="YYYY-MM-DD HH:mm (or leave empty if open-ended)"
-                  placeholderTextColor={colors.muted}
+                  onChange={setCheckOutTime}
+                  time
+                  clearable
+                  min={checkInTime.slice(0, 10)}
+                  placeholder="Open-ended (tap to set)"
                 />
               </>
             ) : (
               <>
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.label}>Monthly Rent (₹) *</Text>
+                    <Text style={[s.label, compactLabel]}>Monthly Rent (₹) *</Text>
                     <TextInput
                       style={s.input}
                       value={rent}
@@ -2730,7 +3013,7 @@ function AddResidentModal({
                     />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.label}>Security Deposit (₹)</Text>
+                    <Text style={[s.label, compactLabel]}>Security Deposit (₹)</Text>
                     <TextInput
                       style={s.input}
                       value={securityDeposit}
@@ -2740,13 +3023,8 @@ function AddResidentModal({
                     />
                   </View>
                 </View>
-                <Text style={s.label}>Joining Date (YYYY-MM-DD) *</Text>
-                <TextInput
-                  style={s.input}
-                  value={joinedOn}
-                  onChangeText={setJoinedOn}
-                  placeholderTextColor={colors.muted}
-                />
+                <Text style={[s.label, compactLabel]}>Joining Date *</Text>
+                <DateField value={joinedOn} onChange={setJoinedOn} />
               </>
             )}
 
@@ -3216,25 +3494,13 @@ function RejoinResidentModal({
                       keyboardType="number-pad"
                       placeholderTextColor={colors.muted}
                     />
-                    <Text style={s.label}>Check-in Date & Time (YYYY-MM-DD HH:mm) *</Text>
-                    <TextInput
-                      style={s.input}
-                      value={checkInTime}
-                      onChangeText={setCheckInTime}
-                      placeholder="YYYY-MM-DD HH:mm"
-                      placeholderTextColor={colors.muted}
-                    />
+                    <Text style={s.label}>Check-in Date & Time *</Text>
+                    <DateField value={checkInTime} onChange={setCheckInTime} time />
                   </>
                 ) : (
                   <>
-                    <Text style={s.label}>New Join Date (YYYY-MM-DD) *</Text>
-                    <TextInput
-                      style={s.input}
-                      value={joinedOn}
-                      onChangeText={setJoinedOn}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor={colors.muted}
-                    />
+                    <Text style={s.label}>New Join Date *</Text>
+                    <DateField value={joinedOn} onChange={setJoinedOn} />
                   </>
                 )}
 
@@ -3342,14 +3608,14 @@ const allocStyles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    marginBottom: 12,
+    marginBottom: 4,
     overflow: 'hidden',
   },
   selectorHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 8,
     backgroundColor: '#f8fafc',
   },
   selectorIconWrap: {

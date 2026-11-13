@@ -14,11 +14,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { del, get, post } from '../api';
+import { del, get, PickedFile, post, put } from '../api';
 import { useAuth } from '../auth';
 import { attempt, useResource } from '../hooks';
-import { AcType, GenderPolicy, Room, RoomType, SharingOption, SharingType } from '../types';
-import { Badge, Button, Card, Chips, Empty, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
+import { ImagePickerField, uploadPictures } from '../images';
+import { PictureTarget, PicturesSheet } from '../pictures';
+import { AcType, Room, RoomType, SharingOption, SharingType } from '../types';
+import { Badge, Button, Chips, Empty, FormModal, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
 import { money } from '../utils';
 
 const STATUS_FILTERS = ['All', 'Vacant', 'Full'] as const;
@@ -34,18 +36,6 @@ const ROOM_TYPES: { key: RoomType; label: string }[] = [
 
 const FLAT_TYPES = ROOM_TYPES.filter((t) => t.key.startsWith('FLAT_'));
 
-const AC_TYPES: { key: AcType; label: string }[] = [
-  { key: 'NON_AC', label: 'Non-AC' },
-  { key: 'AC', label: 'AC' },
-];
-
-const GENDER_POLICIES: { key: GenderPolicy; label: string }[] = [
-  { key: 'UNISEX', label: 'Unisex' },
-  { key: 'MALE', label: 'Male Only' },
-  { key: 'FEMALE', label: 'Female Only' },
-  { key: 'COUPLE', label: 'Couples Allowed' },
-];
-
 /** "Ground Floor", "1st Floor", "2nd Floor"... for a PG with `total` floors above ground. */
 function buildFloorNames(total?: number | null): string[] {
   const count = total && total > 0 ? total : 3;
@@ -59,12 +49,27 @@ function buildFloorNames(total?: number | null): string[] {
 
 const ALL_FLOORS = 'All Floors';
 
+/** Chip label for a floor: "1st Floor" -> "1st", "Ground Floor" -> "G". */
+const shortFloor = (name: string) => {
+  const short = name.replace(/\s+floor$/i, '');
+  return short === 'Ground' ? 'G' : short;
+};
+
 /** Room list. Owners/managers can add/delete; residents see read-only availability. */
-export default function Rooms({ editable = true }: { editable?: boolean }) {
+export default function Rooms({ editable = true, addSignal }: { editable?: boolean; addSignal?: number }) {
   const { user } = useAuth();
   const { data, error, loading, refreshing, refresh, reload } = useResource(() => get<Room[]>('/api/rooms'));
   const [floorFilter, setFloorFilter] = useState<string>(ALL_FLOORS);
   const [open, setOpen] = useState(false);
+  // Dashboard quick action: a new signal value opens the add-room form.
+  const [seenAdd, setSeenAdd] = useState<number | undefined>(undefined);
+  if (addSignal !== seenAdd) {
+    setSeenAdd(addSignal);
+    if (addSignal != null && editable) setOpen(true);
+  }
+  const [rentRoom, setRentRoom] = useState<Room | null>(null);
+  const [editRoom, setEditRoom] = useState<Room | null>(null);
+  const [picturesOf, setPicturesOf] = useState<PictureTarget | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<(typeof STATUS_FILTERS)[number]>('All');
   const [expandedRoomId, setExpandedRoomId] = useState<number | null>(null);
@@ -84,8 +89,10 @@ export default function Rooms({ editable = true }: { editable?: boolean }) {
     return [ALL_FLOORS, ...names];
   }, [data, user?.totalFloors]);
 
+  const floorChips = useMemo(() => floorTabs.map(shortFloor), [floorTabs]);
+
   const rooms = all
-    .filter((r) => floorFilter === ALL_FLOORS || roomFloor(r) === floorFilter)
+    .filter((r) => floorFilter === ALL_FLOORS || shortFloor(roomFloor(r)) === floorFilter)
     .filter((r) => {
       if (!q) return true;
       const numMatch = r.number.toLowerCase().includes(q);
@@ -96,6 +103,78 @@ export default function Rooms({ editable = true }: { editable?: boolean }) {
       return numMatch || nameMatch || bldMatch || flrMatch || occMatch;
     })
     .filter((r) => statusFilter === 'All' || (statusFilter === 'Vacant' ? r.vacant > 0 : r.vacant === 0));
+
+  // A room with several sections has one rent and deposit per section; otherwise a single rent and deposit.
+  const rentSections = (rentRoom?.sections ?? []).length > 1 ? rentRoom!.sections! : null;
+  const roomDeposit = (r: Room) => r.sections?.[0]?.depositPerBed ?? r.sharingOptions?.[0]?.depositPerBed ?? 0;
+  const rentFields = rentRoom
+    ? rentSections
+      ? rentSections.flatMap((sec) => [
+          { key: `sec${sec.id}`, label: `${sec.sectionName} rent`, keyboard: 'numeric' as const, initial: String(sec.rentPerBed), half: true },
+          { key: `dep${sec.id}`, label: `${sec.sectionName} deposit`, keyboard: 'numeric' as const, initial: String(sec.depositPerBed ?? 0), half: true },
+        ])
+      : [
+          { key: 'rent', label: 'Rent / month', keyboard: 'numeric' as const, initial: String(rentRoom.rent), half: true },
+          { key: 'deposit', label: 'Deposit', keyboard: 'numeric' as const, initial: String(roomDeposit(rentRoom)), half: true },
+        ]
+    : [];
+
+  const saveRent = async (values: Record<string, string>) => {
+    if (!rentRoom) return false;
+    const amount = (v: string) => Number(v.replace(/,/g, ''));
+    const body = rentSections
+      ? {
+          sections: rentSections.map((sec) => ({
+            sectionId: sec.id,
+            rentPerBed: amount(values[`sec${sec.id}`]),
+            depositPerBed: amount(values[`dep${sec.id}`]),
+          })),
+        }
+      : { rent: amount(values.rent), deposit: amount(values.deposit) };
+    const invalid = rentSections
+      ? body.sections?.some((x) => !(x.rentPerBed >= 0) || !(x.depositPerBed >= 0))
+      : !(body.rent! >= 0) || !(body.deposit! >= 0);
+    if (invalid) {
+      Alert.alert('Invalid amount', 'Enter a valid rent and deposit.');
+      return false;
+    }
+    const ok = await attempt(() => put(`/api/rooms/${rentRoom.id}/rent`, body));
+    if (!ok) return false;
+    setRentRoom(null);
+    reload();
+    Alert.alert('Updated', 'New residents pay this rent and deposit now. Current residents move to the new rent from their next billing cycle.');
+  };
+
+  const editFields = editRoom
+    ? [
+        { key: 'number', label: editRoom.roomType?.startsWith('FLAT_') ? 'Flat number' : 'Room number', initial: editRoom.number },
+        { key: 'roomName', label: 'Name (optional)', initial: editRoom.roomName ?? '', optional: true },
+        { key: 'buildingName', label: 'Building (optional)', initial: editRoom.buildingName ?? '', optional: true },
+        { key: 'floorName', label: 'Floor', initial: editRoom.floorName?.trim() || 'Ground Floor', options: floorTabs.filter((f) => f !== ALL_FLOORS).map((f) => ({ code: f, label: f })) },
+        { key: 'roomType', label: 'Type', initial: editRoom.roomType ?? 'STANDARD', options: ROOM_TYPES.map((t) => ({ code: t.key, label: t.label })) },
+        { key: 'attachedBathroom', label: 'Attached bathroom', initial: editRoom.attachedBathroom ? 'YES' : 'NO', options: [{ code: 'YES', label: 'Yes' }, { code: 'NO', label: 'No' }] },
+        { key: 'balcony', label: 'Balcony', initial: editRoom.balcony ? 'YES' : 'NO', options: [{ code: 'YES', label: 'Yes' }, { code: 'NO', label: 'No' }] },
+      ]
+    : [];
+
+  /** Sends the edited details. Beds, sections and rent are left as they are (rent has its own "Edit rent"). */
+  const saveEdit = async (v: Record<string, string>) => {
+    if (!editRoom) return false;
+    const ok = await attempt(() =>
+      put(`/api/rooms/${editRoom.id}`, {
+        number: v.number,
+        roomName: v.roomName,
+        buildingName: v.buildingName,
+        floorName: v.floorName,
+        roomType: v.roomType,
+        attachedBathroom: v.attachedBathroom === 'YES',
+        balcony: v.balcony === 'YES',
+      })
+    );
+    if (!ok) return false;
+    setEditRoom(null);
+    reload();
+  };
 
   const confirmDelete = (room: Room) =>
     Alert.alert('Delete room', `Delete room ${room.number}?${room.occupied ? ' Remove its residents first.' : ''}`, [
@@ -120,9 +199,16 @@ export default function Rooms({ editable = true }: { editable?: boolean }) {
     }
   };
 
+  // Overall availability across every room (not just the filtered ones).
+  const totalBeds = all.reduce((n, r) => n + r.capacity, 0);
+  const occupiedBeds = all.reduce((n, r) => n + r.occupied, 0);
+  const vacantBeds = Math.max(0, totalBeds - occupiedBeds);
+  const occupiedPct = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0;
+
   return (
     <Screen
       title={editable ? 'Rooms' : 'Availability'}
+      scrollable={false}
       action={editable ? <HeaderAction label="Add" icon="add-circle" onPress={() => setOpen(true)} /> : undefined}
       loading={loading}
       error={error}
@@ -131,173 +217,205 @@ export default function Rooms({ editable = true }: { editable?: boolean }) {
     >
       {all.length > 0 && (
         <>
+          {/* ── Overall availability ── */}
+          <View style={styles.overall}>
+            <Text style={styles.overallTitle}>Overall Availability</Text>
+            <View style={styles.overallRow}>
+              <View style={styles.overallStats}>
+                <View style={styles.overallStat}>
+                  <Ionicons name="bed" size={18} color={colors.bad} />
+                  <View>
+                    <Text style={styles.overallValue}>{occupiedBeds} / {totalBeds}</Text>
+                    <Text style={styles.overallLabel}>Beds occupied</Text>
+                  </View>
+                </View>
+                <View style={styles.overallStat}>
+                  <Ionicons name="bed-outline" size={18} color={colors.good} />
+                  <View>
+                    <Text style={styles.overallValue}>{vacantBeds}</Text>
+                    <Text style={styles.overallLabel}>Beds vacant</Text>
+                  </View>
+                </View>
+              </View>
+              <View style={styles.pctRing}>
+                <Text style={styles.pctValue}>{occupiedPct}%</Text>
+                <Text style={styles.pctLabel}>Occupied</Text>
+              </View>
+            </View>
+          </View>
+
           <SearchInput
             value={search}
             onChange={setSearch}
             placeholder={editable ? 'Search room, building or resident' : 'Search room'}
           />
-          <Chips options={floorTabs} value={floorFilter} onChange={setFloorFilter} />
+          <Chips options={floorChips} value={floorFilter} onChange={setFloorFilter} />
           <Chips options={STATUS_FILTERS} value={statusFilter} onChange={setStatusFilter} />
         </>
       )}
 
-      {data && all.length === 0 && <Empty text="No rooms yet. Add your first room." />}
-      {all.length > 0 && rooms.length === 0 && <Empty text="No rooms match your filter." />}
+      <ScrollView
+        style={{ flex: 1, marginTop: 10 }}
+        contentContainerStyle={{ paddingBottom: 32 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {data && all.length === 0 && <Empty text="No rooms yet. Add your first room." />}
+        {all.length > 0 && rooms.length === 0 && <Empty text="No rooms match your filter." />}
 
-      {rooms.map((room) => {
+        {rooms.map((room) => {
         const isExpanded = expandedRoomId === room.id;
-        const locationText = [room.buildingName, room.floorName].filter(Boolean).join(' · ');
         const isFlat = room.roomType?.startsWith('FLAT_');
+        const title = (isFlat ? 'Flat ' : 'Room ') + room.number + (room.roomName ? ' (' + room.roomName + ')' : '');
+        // Collapsed rows stay on one or two lines: number, floor and type.
+        const summary = [room.floorName?.trim() || 'Ground Floor', formatRoomTypeLabel(room.roomType)].join(' · ');
+        const status = isFlat
+          ? room.vacant
+            ? 'Vacant'
+            : room.availableFrom
+              ? 'Getting Vacated'
+              : 'Occupied'
+          : room.vacant
+            ? room.vacant + ' vacant'
+            : room.availableFrom
+              ? 'Getting Vacated'
+              : 'Full';
 
         return (
-          <Card key={room.id} style={{ marginBottom: 12 }}>
-            <Pressable onPress={() => setExpandedRoomId(isExpanded ? null : room.id)}>
-              <View style={s.row}>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <Text style={s.h2}>{isFlat ? 'Flat' : 'Room'} {room.number}</Text>
-                    {room.roomName && (
-                      <Text style={[s.muted, { fontWeight: '600' }]}>({room.roomName})</Text>
-                    )}
-                  </View>
-                  {locationText ? (
-                    <Text style={[s.muted, { fontSize: 11, marginTop: 1 }]}>
-                      {locationText}
-                    </Text>
-                  ) : null}
-                </View>
-
-                <Badge
-                  text={isFlat ? (room.vacant ? 'Vacant' : 'Occupied') : room.vacant ? `${room.vacant} vacant` : 'Full'}
-                  color={room.vacant ? colors.good : colors.bad}
-                />
+          <View key={room.id} style={styles.roomCard}>
+            <Pressable style={styles.roomRow} onPress={() => setExpandedRoomId(isExpanded ? null : room.id)}>
+              <View style={styles.roomIcon}>
+                <Ionicons name={isFlat ? 'home-outline' : 'bed-outline'} size={20} color={colors.primary} />
               </View>
-
-              {/* Tag Badges */}
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                <Badge text={formatRoomTypeLabel(room.roomType)} color={colors.blue} />
-                <Badge text={room.acType === 'AC' ? 'AC' : 'Non-AC'} color={room.acType === 'AC' ? '#0284c7' : '#64748b'} />
-                {room.genderPolicy && room.genderPolicy !== 'UNISEX' && (
-                  <Badge
-                    text={room.genderPolicy === 'MALE' ? 'Male' : room.genderPolicy === 'FEMALE' ? 'Female' : 'Couples'}
-                    color="#8b5cf6"
-                  />
-                )}
-                {room.attachedBathroom && <Badge text="Attached Bath" color="#059669" />}
-                {room.balcony && <Badge text="Balcony" color="#d97706" />}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.roomTitle} numberOfLines={1}>{title}</Text>
+                <Text style={styles.roomSummary} numberOfLines={1}>{summary}</Text>
               </View>
-
-              {/* Sharing Plans */}
-              {!isFlat && room.sharingOptions && room.sharingOptions.length > 0 && (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                  {room.sharingOptions.map((opt, idx) => (
-                    <View key={opt.id ?? idx} style={styles.sharingPill}>
-                      <Text style={styles.sharingPillType}>
-                        {opt.capacity}-Sharing:
-                      </Text>
-                      <Text style={styles.sharingPillRent}>
-                        {money(opt.rentPerBed)}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              {/* Occupancy */}
-              {isFlat ? (
-                <View style={[s.row, { marginTop: 10 }]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Ionicons name="home-outline" size={16} color={colors.primary} />
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>
-                      {room.vacant > 0 ? 'Available' : 'Occupied'}
-                    </Text>
-                  </View>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: colors.primary }}>
-                    {money(room.rent)}/month
-                  </Text>
-                </View>
-              ) : (
-                <View style={[s.row, { marginTop: 10 }]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Ionicons name="bed-outline" size={16} color={colors.primary} />
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>
-                      {room.occupied}/{room.capacity} beds occupied
-                    </Text>
-                  </View>
-                  <Text style={s.muted}>
-                    {room.vacant > 0 ? `${room.vacant} vacant` : 'Full'}
-                  </Text>
-                </View>
-              )}
-
-              {/* Occupant names (staff only) */}
-              {editable && room.occupants && room.occupants.length > 0 && !isExpanded && (
-                <Text style={[s.muted, { marginTop: 4 }]} numberOfLines={1}>
-                  Residents: {room.occupants.join(', ')}
-                </Text>
-              )}
+              <Badge
+                text={status}
+                color={
+                  room.vacant
+                    ? colors.good
+                    : status === 'Getting Vacated'
+                      ? colors.warn
+                      : colors.bad
+                }
+              />
+              <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.muted} />
             </Pressable>
 
-            {/* Sections & Beds Breakdown */}
-            {isExpanded && !isFlat && room.sections && room.sections.length > 0 && (
-              <View style={styles.sectionsContainer}>
-                <Text style={styles.sectionHeaderTitle}>Beds & Sections</Text>
-                {room.sections.map((sec) => (
-                  <View key={sec.id} style={styles.sectionItem}>
-                    <View style={s.row}>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>
-                        {sec.sectionName}
-                      </Text>
-                      <Text style={{ fontSize: 11, color: colors.primary, fontWeight: '600' }}>
-                        {money(sec.rentPerBed)}/bed
+            {isExpanded && (
+              <View style={styles.roomDetails}>
+                {/* Occupancy (Flats only) */}
+                {isFlat && (
+                  <View style={[s.row, { marginTop: 10, marginBottom: 10, flexWrap: 'wrap' }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons
+                        name="home-outline"
+                        size={16}
+                        color={room.vacant > 0 ? colors.good : room.availableFrom ? colors.warn : colors.primary}
+                      />
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>
+                        {room.vacant > 0
+                          ? 'Available'
+                          : room.availableFrom
+                            ? `Getting Vacated (from ${room.availableFrom})`
+                            : 'Occupied'}
                       </Text>
                     </View>
-
-                    <View style={styles.bedList}>
-                      {sec.beds && sec.beds.map((bed) => {
-                        const isVacant = bed.status === 'VACANT';
-                        return (
-                          <View
-                            key={bed.id}
-                            style={[
-                              styles.bedChip,
-                              { backgroundColor: isVacant ? '#f0fdf4' : '#fef2f2', borderColor: isVacant ? '#86efac' : '#fca5a5' },
-                            ]}
-                          >
-                            <Ionicons
-                              name={isVacant ? 'bed-outline' : 'person'}
-                              size={13}
-                              color={isVacant ? colors.good : colors.bad}
-                            />
-                            <Text style={{ fontSize: 11, fontWeight: '600', color: isVacant ? colors.good : colors.bad }}>
-                              {bed.bedNumber}
-                              {bed.residentName && editable ? `: ${bed.residentName}` : isVacant ? ' (Vacant)' : ' (Occupied)'}
-                            </Text>
-                          </View>
-                        );
-                      })}
-                    </View>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: colors.primary }}>
+                      {money(room.rent)}/month
+                      <Text style={{ fontWeight: '500', color: colors.muted }}>  ·  Deposit {money(roomDeposit(room))}</Text>
+                    </Text>
                   </View>
-                ))}
-              </View>
-            )}
-
-            {editable && (
-              <View style={[s.row, { marginTop: 10, justifyContent: 'flex-end', gap: 8 }]}>
-                {!isFlat && (
-                  <Button
-                    small
-                    kind="ghost"
-                    label={isExpanded ? 'Hide Beds' : 'View Beds'}
-                    onPress={() => setExpandedRoomId(isExpanded ? null : room.id)}
-                  />
                 )}
-                <Button small kind="danger" label="Delete" onPress={() => confirmDelete(room)} />
+
+                {/* Occupant names (staff only) */}
+                {editable && room.occupants && room.occupants.length > 0 && (
+                  <Text style={[s.muted, { marginTop: 8 }]}>Residents: {room.occupants.join(', ')}</Text>
+                )}
+
+                {/* Sections & Beds Breakdown */}
+                {!isFlat && room.sections && room.sections.length > 0 && (
+                  <View style={styles.sectionsContainer}>
+                    <Text style={styles.sectionHeaderTitle}>Beds & Sections</Text>
+                    {room.sections.map((sec) => (
+                      <View key={sec.id} style={styles.sectionItem}>
+                        <View style={s.row}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="layers-outline" size={15} color={colors.text} />
+                            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text }}>{sec.sectionName}</Text>
+                          </View>
+                          <Badge text={`${money(sec.rentPerBed)}/bed · Deposit ${money(sec.depositPerBed ?? 0)}`} color={colors.good} />
+                        </View>
+
+                        <View style={styles.bedList}>
+                          {sec.beds && sec.beds.map((bed) => {
+                            const isVacant = bed.status === 'VACANT';
+                            // Occupied, but the occupant's notice is approved: free from that date.
+                            const leaving = !isVacant && !!bed.availableFrom;
+                            const tone = isVacant ? colors.good : leaving ? colors.warn : colors.bad;
+                            return (
+                              <View
+                                key={bed.id}
+                                style={[
+                                  styles.bedChip,
+                                  {
+                                    backgroundColor: isVacant ? '#f0fdf4' : leaving ? '#fffbeb' : '#fef2f2',
+                                    borderColor: isVacant ? '#86efac' : leaving ? '#fcd34d' : '#fca5a5',
+                                  },
+                                ]}
+                              >
+                                <Ionicons
+                                  name={isVacant ? 'bed-outline' : 'bed'}
+                                  size={13}
+                                  color={tone}
+                                />
+                                <Text style={{ fontSize: 11, fontWeight: '600', color: tone }}>
+                                  {bed.bedNumber}
+                                  {bed.residentName && editable ? ': ' + bed.residentName : isVacant ? ' (Vacant)' : ' (Occupied)'}
+                                  {leaving ? ` · free from ${bed.availableFrom}` : ''}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {editable && (
+                  <View style={[s.row, { marginTop: 10, justifyContent: 'flex-end', gap: 8 }]}>
+                    <Button small kind="ghost" label="Edit" onPress={() => setEditRoom(room)} />
+                    <Button small kind="ghost" label="Edit rent" onPress={() => setRentRoom(room)} />
+                    <Button small kind="ghost" label="Pictures" onPress={() => setPicturesOf({ type: 'room', id: room.id, title: `Room ${room.number}` })} />
+                    <Button small kind="danger" label="Delete" onPress={() => confirmDelete(room)} />
+                  </View>
+                )}
               </View>
             )}
-          </Card>
+          </View>
         );
       })}
+      </ScrollView>
+
+      <PicturesSheet target={picturesOf} onClose={() => setPicturesOf(null)} />
+
+      <FormModal
+        visible={!!editRoom}
+        title={editRoom ? 'Edit ' + (editRoom.roomType?.startsWith('FLAT_') ? 'flat' : 'room') + ' ' + editRoom.number : 'Edit'}
+        fields={editFields}
+        onClose={() => setEditRoom(null)}
+        onSubmit={saveEdit}
+      />
+
+      <FormModal
+        visible={!!rentRoom}
+        title={rentRoom ? `Edit rent: Room ${rentRoom.number}` : 'Edit rent'}
+        fields={rentFields}
+        onClose={() => setRentRoom(null)}
+        onSubmit={saveRent}
+      />
 
       <AddRoomModal
         visible={open}
@@ -318,21 +436,15 @@ type FacilityOption = {
 };
 
 const BASE_FACILITIES: FacilityOption[] = [
-  { key: 'AC', label: 'AC', icon: 'snow-outline' },
-  { key: 'Non-AC', label: 'Non-AC', icon: 'leaf-outline' },
   { key: 'Attached Bathroom', label: 'Attached Bathroom', icon: 'water-outline' },
-  { key: 'Common Bathroom', label: 'Common Bathroom', icon: 'rainy-outline' },
   { key: 'Wi-Fi', label: 'Wi-Fi', icon: 'wifi-outline' },
   { key: 'TV', label: 'TV', icon: 'tv-outline' },
   { key: 'Wardrobe', label: 'Wardrobe', icon: 'file-tray-stacked-outline' },
-  { key: 'Balcony', label: 'Balcony', icon: 'grid-outline' },
   { key: 'Geyser', label: 'Geyser', icon: 'flame-outline' },
   { key: 'Other', label: 'Other', icon: 'ellipsis-horizontal' },
 ];
 
 const SECTION_FACILITY_OPTIONS: FacilityOption[] = [
-  { key: 'AC', label: 'AC', icon: 'snow-outline' },
-  { key: 'Non-AC', label: 'Non-AC', icon: 'leaf-outline' },
   { key: 'Attached Bath', label: 'Attached Bath', icon: 'water-outline' },
   { key: 'Wi-Fi', label: 'Wi-Fi', icon: 'wifi-outline' },
   { key: 'TV', label: 'TV', icon: 'tv-outline' },
@@ -358,7 +470,7 @@ type SectionForm = {
   facilities: string[];
 };
 
-function AddRoomModal({
+export function AddRoomModal({
   visible,
   onClose,
   onCreated,
@@ -378,8 +490,8 @@ function AddRoomModal({
   const [floorName, setFloorName] = useState('Ground Floor');
   const [number, setNumber] = useState('');
   const [roomTypeKind, setRoomTypeKind] = useState<'SHARING' | 'PRIVATE'>('SHARING');
-  const [facilities, setFacilities] = useState<string[]>(['AC', 'Wi-Fi']);
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [facilities, setFacilities] = useState<string[]>(['AC', '']);
+  const [photos, setPhotos] = useState<PickedFile[]>([]);
 
   // Apartment PGs rent whole flats (1BHK/2BHK/...) instead of beds.
   const [pgStayType, setPgStayType] = useState<string | null>(null);
@@ -433,15 +545,21 @@ function AddRoomModal({
   };
 
   const toggleSectionFacility = (secIndex: number, key: string) => {
-    const updated = [...sections];
-    const sec = updated[secIndex];
-    if (sec.facilities.includes(key)) {
-      sec.facilities = sec.facilities.filter((f) => f !== key);
-    } else {
-      sec.facilities = [...sec.facilities, key];
-    }
-    setSections(updated);
-  };
+  setSections(prev =>
+    prev.map((sec, index) => {
+      if (index !== secIndex) return sec;
+
+      const facilities = sec.facilities ?? [];
+
+      return {
+        ...sec,
+        facilities: facilities.includes(key)
+          ? facilities.filter(f => f !== key)
+          : [...facilities, key],
+      };
+    })
+  );
+};
 
   const handleAddSection = () => {
     const nextChar = String.fromCharCode(65 + sections.length);
@@ -452,7 +570,7 @@ function AddRoomModal({
       capacity: 2,
       rentPerBed: '5000',
       depositPerBed: '5000',
-      facilities: ['Non-AC'],
+      facilities: [''],
     };
     setSections([...sections, newSection]);
   };
@@ -465,11 +583,19 @@ function AddRoomModal({
     setSections([]);
   };
 
-  const updateSection = (secIndex: number, field: keyof SectionForm, value: any) => {
-    const updated = [...sections];
-    updated[secIndex] = { ...updated[secIndex], [field]: value };
-    setSections(updated);
-  };
+  const updateSection = (
+  secIndex: number,
+  field: keyof SectionForm,
+  value: any
+) => {
+  setSections(prev =>
+    prev.map((section, index) =>
+      index === secIndex
+        ? { ...section, [field]: value }
+        : section
+    )
+  );
+};
 
   const goToStep2 = () => {
     if (!number.trim()) {
@@ -568,8 +694,9 @@ function AddRoomModal({
         ];
       }
 
-      const ok = await attempt(() =>
-        post('/api/rooms', {
+      let createdRoom: { id: number } | null = null;
+      const ok = await attempt(async () => {
+        createdRoom = await post<{ id: number }>('/api/rooms', {
           number: num,
           roomName: null,
           buildingName: buildingName.trim() || null,
@@ -583,12 +710,17 @@ function AddRoomModal({
           rent: hasSections ? (totalBeds > 0 ? totalMonthlyRent / totalBeds : 0) : parseFloat(directRent) || 0,
           sections: payloadSections,
           sharingOptions: payloadSharingOptions,
-        })
-      );
+        });
+      });
 
       if (ok) {
+        const problem =
+          createdRoom && photos.length
+            ? await uploadPictures(`/api/media/room/${(createdRoom as { id: number }).id}`, photos)
+            : null;
         resetForm();
         onCreated();
+        if (problem) Alert.alert('Room added', problem);
       }
     } finally {
       setBusy(false);
@@ -610,10 +742,12 @@ function AddRoomModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
-      <SafeAreaView style={wizardStyles.container}>
-        {/* Header Bar */}
-        <View style={wizardStyles.header}>
+    <Modal visible={visible} transparent={true} animationType="fade" onRequestClose={handleClose}>
+      <KeyboardAvoidingView style={s.overlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
+        <View style={[s.sheet, { width: '92%', maxWidth: 440, height: '85%', overflow: 'hidden' }]}>
+          {/* Header Bar */}
+          <View style={wizardStyles.header}>
           <Pressable
             onPress={() => {
               if (step === 3) setStep(2);
@@ -925,18 +1059,7 @@ function AddRoomModal({
               {/* Room Photos (Optional) */}
               <View>
                 <Text style={wizardStyles.sectionTitle}>Room Photos (Optional)</Text>
-                <Pressable
-                  style={wizardStyles.photoUploadBox}
-                  onPress={() => {
-                    setPhotos([...photos, `Photo ${photos.length + 1}`]);
-                  }}
-                >
-                  <Ionicons name="camera-outline" size={32} color="#64748b" />
-                  <Text style={wizardStyles.photoUploadTitle}>Add Photos</Text>
-                  <Text style={wizardStyles.photoUploadSubtext}>
-                    {photos.length > 0 ? `${photos.length} photo(s) selected` : 'You can add multiple photos'}
-                  </Text>
-                </Pressable>
+                <ImagePickerField label="Up to 10 pictures" files={photos} onChange={setPhotos} max={10} />
               </View>
             </View>
           )}
@@ -1477,12 +1600,79 @@ function AddRoomModal({
             </View>
           )}
         </View>
-      </SafeAreaView>
-    </Modal>
+      </View>
+    </KeyboardAvoidingView>
+  </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  overall: {
+    backgroundColor: colors.primaryLight,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  overallTitle: { fontSize: 15, fontWeight: '800', color: colors.text, marginBottom: 8 },
+  overallRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  overallStats: { flex: 1, flexDirection: 'row', gap: 8 },
+  overallStat: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.card,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  overallValue: { fontSize: 16, fontWeight: '800', color: colors.text },
+  overallLabel: { fontSize: 10, color: colors.muted },
+  pctRing: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    borderWidth: 5,
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pctValue: { fontSize: 14, fontWeight: '800', color: colors.text },
+  pctLabel: { fontSize: 8, color: colors.muted },
+  roomCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 8,
+  },
+  roomRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 12 },
+  roomIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  roomTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  roomSummary: { fontSize: 11, color: colors.muted, marginTop: 1 },
+  roomDetails: { paddingHorizontal: 12, paddingBottom: 12 },
+  infoPanel: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 10,
+  },
+  buildingRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  barRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: '#e2e8f0', overflow: 'hidden' },
+  barFill: { height: 8, borderRadius: 4, backgroundColor: colors.primary },
+  barPct: { fontSize: 11, fontWeight: '700', color: colors.muted, minWidth: 32, textAlign: 'right' },
   sharingPill: {
     flexDirection: 'row',
     alignItems: 'center',

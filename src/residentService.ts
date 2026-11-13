@@ -1,25 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   AttendanceRecord,
-  Complaint,
   FoodMenu,
   LeaveApplication,
   MealPreference,
   PgDocument,
-  PgNotice,
   VisitorPass,
 } from './types';
+import { get } from './api';
 import { today } from './utils';
 
 const STORAGE_KEYS = {
-  COMPLAINTS: 'mypg_res_complaints',
   ATTENDANCE: 'mypg_res_attendance',
   VISITORS: 'mypg_res_visitors',
   LEAVES: 'mypg_res_leaves',
   MEALS: 'mypg_res_meal_prefs',
-  NOTICES: 'mypg_res_notices',
   DOCUMENTS: 'mypg_res_documents',
+  RULES: 'mypg_pg_rules',
 };
+
+/** House rules are written once and rarely edited, so a stored copy is trusted for this long. */
+const RULES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const DEFAULT_WEEKLY_MENU: FoodMenu[] = [
   {
@@ -73,33 +74,6 @@ const DEFAULT_WEEKLY_MENU: FoodMenu[] = [
   },
 ];
 
-const DEFAULT_NOTICES: PgNotice[] = [
-  {
-    id: 'not-1',
-    title: 'Wi-Fi Fiber Maintenance Schedule',
-    content: 'High-speed fiber optic line upgrade scheduled for this Saturday from 2:00 PM to 4:00 PM. High-speed backup Wi-Fi will remain active on Floor 1 & 2.',
-    date: 'Today',
-    category: 'MAINTENANCE',
-    important: true,
-  },
-  {
-    id: 'not-2',
-    title: 'Festive Dinner & Common Area Celebration',
-    content: 'Special festival dinner celebration will be served this Sunday starting at 8:00 PM in the dining hall. All residents are cordially invited!',
-    date: 'Yesterday',
-    category: 'EVENT',
-    important: false,
-  },
-  {
-    id: 'not-3',
-    title: 'Visitor Timings & Gate Policy Reminder',
-    content: 'Visitors are permitted in common lounge areas between 8:00 AM and 8:30 PM. Please ensure your visitors are registered in the resident app.',
-    date: '3 days ago',
-    category: 'RULE',
-    important: false,
-  },
-];
-
 const DEFAULT_DOCUMENTS: PgDocument[] = [
   {
     id: 'doc-1',
@@ -136,55 +110,6 @@ const DEFAULT_DOCUMENTS: PgDocument[] = [
 ];
 
 export const ResidentStorage = {
-  // ── Complaints ──
-  async getComplaints(residentId?: number | null): Promise<Complaint[]> {
-    try {
-      const key = `${STORAGE_KEYS.COMPLAINTS}_${residentId || 'default'}`;
-      const json = await AsyncStorage.getItem(key);
-      if (json) return JSON.parse(json);
-      // Sample initial complaints
-      return [
-        {
-          id: 'cmp-101',
-          category: 'Wi-Fi',
-          title: 'Wi-Fi speed drop in Room 204',
-          description: 'Signal strength is weak near the balcony desk area.',
-          priority: 'MEDIUM',
-          status: 'IN_PROGRESS',
-          createdAt: '2026-10-28',
-          resolutionNotes: 'Wi-Fi repeater technician assigned to inspect signal router on 2nd floor.',
-        },
-        {
-          id: 'cmp-100',
-          category: 'Cleaning',
-          title: 'Deep bathroom cleaning requested',
-          description: 'Weekly scheduled deep bathroom and mirror cleaning.',
-          priority: 'LOW',
-          status: 'RESOLVED',
-          createdAt: '2026-10-20',
-          resolvedAt: '2026-10-21',
-          resolutionNotes: 'Housekeeping team completed sanitization and tile cleaning.',
-        },
-      ];
-    } catch {
-      return [];
-    }
-  },
-
-  async addComplaint(residentId: number | null | undefined, complaint: Omit<Complaint, 'id' | 'createdAt' | 'status'>): Promise<Complaint> {
-    const list = await this.getComplaints(residentId);
-    const newItem: Complaint = {
-      ...complaint,
-      id: `cmp-${Date.now()}`,
-      createdAt: today(),
-      status: 'OPEN',
-    };
-    const updated = [newItem, ...list];
-    const key = `${STORAGE_KEYS.COMPLAINTS}_${residentId || 'default'}`;
-    await AsyncStorage.setItem(key, JSON.stringify(updated));
-    return newItem;
-  },
-
   // ── Attendance ──
   async getAttendance(residentId?: number | null): Promise<AttendanceRecord[]> {
     try {
@@ -335,13 +260,33 @@ export const ResidentStorage = {
     return DEFAULT_WEEKLY_MENU;
   },
 
-  // ── Notices ──
-  async getNotices(): Promise<PgNotice[]> {
-    return DEFAULT_NOTICES;
-  },
-
   // ── Documents ──
   async getDocuments(): Promise<PgDocument[]> {
     return DEFAULT_DOCUMENTS;
+  },
+
+  // ── House rules (notice board) ──
+  /**
+   * The property's rules, from the device cache when it is fresh, otherwise from the server.
+   * Only non-empty rules are cached, so rules the owner adds later are picked up on the next open.
+   * If the server cannot be reached, an older stored copy is still shown.
+   */
+  async getRules(pgId: number | null | undefined): Promise<string> {
+    const key = `${STORAGE_KEYS.RULES}_${pgId || 'default'}`;
+    let stored: { rules: string; at: number } | null = null;
+    try {
+      const json = await AsyncStorage.getItem(key);
+      if (json) stored = JSON.parse(json);
+    } catch {
+      stored = null;
+    }
+    if (stored && Date.now() - stored.at < RULES_TTL_MS) return stored.rules;
+    try {
+      const fetched = (await get<{ rules: string | null }>('/api/me/rules')).rules?.trim() ?? '';
+      if (fetched) await AsyncStorage.setItem(key, JSON.stringify({ rules: fetched, at: Date.now() }));
+      return fetched;
+    } catch {
+      return stored?.rules ?? '';
+    }
   },
 };

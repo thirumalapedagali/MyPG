@@ -1,25 +1,64 @@
 {
   "expo": {
-    "name": "app",
-    "slug": "app",
+    "name": "MyStay",
+    "slug": "mystay",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/MyStay.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.mystay.app",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/MyStay-adaptive.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "MyStay needs your photos so you can attach pictures of properties, rooms and residents.",
+          "cameraPermission": "MyStay needs the camera so you can take pictures of properties, rooms and residents."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "MyStay uses your location to show PGs, hostels and apartments near you."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/MyStay.png",
+          "imageWidth": 220,
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-notifications"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "33bdefea-e92c-44a8-9642-e73a9ffa0838"
+      }
+    },
+    "owner": "thirumala.pedagali"
   }
 }

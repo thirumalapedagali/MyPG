@@ -3,24 +3,45 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
-import React from 'react';
+import * as SplashScreen from 'expo-splash-screen';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import AnimatedSplash from './src/AnimatedSplash';
+import { registerForPush, watchPushToken } from './src/push';
 import { AuthProvider, useAuth } from './src/auth';
-import { colors } from './src/ui';
+import { PropertyRequired, colors } from './src/ui';
 import Dashboard from './src/screens/Dashboard';
 import Today from './src/screens/Today';
 import Overview from './src/screens/Overview';
 import Rooms from './src/screens/Rooms';
 import Residents from './src/screens/Residents';
+import PendingDues from './src/screens/PendingDues';
+import Announcements from './src/screens/Announcements';
+import SupportContacts from './src/screens/SupportContacts';
+import Complaints from './src/screens/Complaints';
+import CheckinRequests from './src/screens/CheckinRequests';
+import VacateRequests from './src/screens/VacateRequests';
 import Expenses from './src/screens/Expenses';
 import MyDues from './src/screens/MyDues';
 import Login from './src/screens/Login';
 import Account, { MustChangePassword } from './src/screens/Account';
 import Users from './src/screens/Users';
 import Pgs from './src/screens/Pgs';
+import AdminHome from './src/screens/AdminHome';
+import AdminUsers from './src/screens/AdminUsers';
+import Registrations from './src/screens/Registrations';
+import Lookups from './src/screens/Lookups';
+import PropertyCatalog from './src/screens/PropertyCatalog';
+import PropertySetup from './src/screens/PropertySetup';
+import PropertyTypes from './src/screens/PropertyTypes';
 import ExploreScreen from './src/screens/ExploreScreen';
 import ResidentDashboard from './src/screens/ResidentDashboard';
+import Notifications from './src/screens/Notifications';
+import { initNotificationListeners } from './src/notificationStore';
+
+// Keep the native splash up until the animated intro is mounted and takes over.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -73,6 +94,12 @@ function useScreenOptions() {
   });
 }
 
+/** Rooms, residents and expenses belong to one property: while an owner views "All Properties", ask them to pick one. */
+function PerProperty({ title, children }: { title: string; children: React.ReactNode }) {
+  const { user } = useAuth();
+  return user?.allProperties ? <PropertyRequired title={title} /> : <>{children}</>;
+}
+
 function OwnerTabs() {
   const opts = useScreenOptions();
   return (
@@ -80,9 +107,27 @@ function OwnerTabs() {
       <Tab.Screen name="Dashboard" component={Dashboard} />
       <Tab.Screen name="Today" component={Today} />
       <Tab.Screen name="Overview" component={Overview} />
-      <Tab.Screen name="Rooms" component={Rooms} />
-      <Tab.Screen name="Residents" component={Residents} />
-      <Tab.Screen name="Expenses" component={Expenses} />
+      <Tab.Screen name="Rooms">
+        {({ route }) => (
+          <PerProperty title="Rooms">
+            <Rooms addSignal={(route.params as { add?: number } | undefined)?.add} />
+          </PerProperty>
+        )}
+      </Tab.Screen>
+      <Tab.Screen name="Residents">
+        {({ navigation, route }) => (
+          <PerProperty title="Residents">
+            <Residents navigation={navigation} route={route} />
+          </PerProperty>
+        )}
+      </Tab.Screen>
+      <Tab.Screen name="Expenses">
+        {({ route }) => (
+          <PerProperty title="Expenses">
+            <Expenses addSignal={(route.params as { add?: number } | undefined)?.add} />
+          </PerProperty>
+        )}
+      </Tab.Screen>
       <Tab.Screen name="Account" component={Account} />
     </Tab.Navigator>
   );
@@ -101,8 +146,19 @@ function ResidentTabs() {
   );
 }
 
+/** All authenticated users get push notifications: register this phone once they are signed in and past the forced password change. */
+function usePushRegistration() {
+  const { user } = useAuth();
+const eligible = user != null && user.mustChangePassword === false;  useEffect(() => {
+    if (!eligible) return;
+    registerForPush();
+    return watchPushToken();
+  }, [eligible]);
+}
+
 function Root() {
   const { ready, user } = useAuth();
+  usePushRegistration();
   if (!ready)
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg }}>
@@ -112,19 +168,37 @@ function Root() {
   if (!user) return <Login />;
   if (user.mustChangePassword) return <MustChangePassword />;
 
-  // A super admin has no PG until one is opened, so the PG list is the only screen they can use.
+  // A super admin has no PG until one is opened, so only the admin console screens are available.
   const needsPg = user.role === 'SUPER_ADMIN' && user.pgId == null;
   const Main = user.role === 'RESIDENT' ? ResidentTabs : OwnerTabs;
 
+  // Switching property remounts the navigator so every screen reloads that property's data.
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
+    <Stack.Navigator key={`${user.pgId ?? 'none'}-${user.allProperties ? 'all' : 'one'}`} screenOptions={{ headerShown: false }}>
       {needsPg ? (
-        <Stack.Screen name="Pgs" component={Pgs} />
+        <>
+          <Stack.Screen name="AdminHome" component={AdminHome} />
+          <Stack.Screen name="Pgs" component={Pgs} />
+          <Stack.Screen name="AdminUsers" component={AdminUsers} />
+          <Stack.Screen name="Registrations" component={Registrations} />
+          <Stack.Screen name="Lookups" component={Lookups} />
+          <Stack.Screen name="PropertyTypes" component={PropertyTypes} />
+          <Stack.Screen name="PropertyCatalog" component={PropertyCatalog} />
+          <Stack.Screen name="Notifications" component={Notifications} />
+        </>
       ) : (
         <>
           <Stack.Screen name="Main" component={Main} />
+          {user.role !== 'RESIDENT' && <Stack.Screen name="PendingDues" component={PendingDues} />}
+          <Stack.Screen name="Announcements" component={Announcements} />
+          {user.role !== 'RESIDENT' && <Stack.Screen name="SupportContacts" component={SupportContacts} />}
+          {user.role !== 'RESIDENT' && <Stack.Screen name="PropertySetup" component={PropertySetup} />}
+          {user.role !== 'RESIDENT' && <Stack.Screen name="Complaints" component={Complaints} />}
+          {user.role !== 'RESIDENT' && <Stack.Screen name="CheckinRequests" component={CheckinRequests} />}
+          {user.role !== 'RESIDENT' && <Stack.Screen name="VacateRequests" component={VacateRequests} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Users" component={Users} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Pgs" component={Pgs} />}
+          <Stack.Screen name="Notifications" component={Notifications} />
         </>
       )}
     </Stack.Navigator>
@@ -132,6 +206,14 @@ function Root() {
 }
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
+  const onSplashDone = useCallback(() => setShowSplash(false), []);
+
+  useEffect(() => {
+    const cleanup = initNotificationListeners();
+    return cleanup;
+  }, []);
+
   return (
     <SafeAreaProvider>
       <AuthProvider>
@@ -140,6 +222,7 @@ export default function App() {
           <StatusBar style="dark" />
         </NavigationContainer>
       </AuthProvider>
+      {showSplash && <AnimatedSplash onFinish={onSplashDone} />}
     </SafeAreaProvider>
   );
 }
