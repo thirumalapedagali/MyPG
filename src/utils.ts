@@ -14,6 +14,12 @@ export const formatDateTime = (s?: string | null) => {
 };
 export const money = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN');
 export const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+/** "13:30" -> "1:30 PM" */
+export const clock12 = (t: string) => {
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+};
+
 export const isDateTime = (s: string) => /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s);
 
 export const PRESETS = ['Today', 'Yesterday', 'This Week', 'This Month', 'All'] as const;

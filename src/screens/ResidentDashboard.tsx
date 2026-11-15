@@ -25,6 +25,7 @@ import {
   ComplaintPriority,
   FoodMenu,
   LeaveApplication,
+  MealOccurrence,
   MealPreference,
   MyDuesData,
   PgDocument,
@@ -33,7 +34,7 @@ import {
 } from '../types';
 import { DateField } from '../dateField';
 import { Avatar, Badge, Card, FormModal, Screen, colors, s } from '../ui';
-import { isDate, money, today, ymd } from '../utils';
+import { clock12, isDate, money, today, ymd } from '../utils';
 
 /** Earliest leaving date the server accepts: 30 days from now. */
 const NOTICE_DAYS = 30;
@@ -74,6 +75,27 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
   const complaintsRes = useResource(() => get<Complaint[]>('/api/me/complaints'));
   const complaints = complaintsRes.data ?? [];
   const updatedComplaints = complaints.filter((c) => !c.residentSeen).length;
+
+  // Meals being served now and the next ones; empty when the property has no food menu.
+  const mealsRes = useResource(() => get<MealOccurrence[]>('/api/me/meals').catch(() => [] as MealOccurrence[]));
+  const nextMeals = (mealsRes.data ?? []).slice(0, 4);
+  const [respondingMeal, setRespondingMeal] = useState<string | null>(null);
+  const respondToMeal = async (m: MealOccurrence, attending: boolean) => {
+  const key = `${m.mealId}@${m.date}`;
+  setRespondingMeal(key);
+
+  const ok = await attempt(() =>
+    post('/api/me/meals/attend', {
+      mealId: m.mealId,
+      date: m.date,
+      attending,
+    })
+  );
+
+  setRespondingMeal(null);
+
+  if (ok) mealsRes.reload();
+};
   const categories = useLookup(COMPLAINT_CATEGORY);
 
   // Module state
@@ -316,7 +338,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
       loading={loading}
       error={error && !error.toLowerCase().includes('resident profile') ? error : null}
       refreshing={refreshing}
-      onRefresh={() => { refresh(); complaintsRes.refresh(); }}
+      onRefresh={() => { refresh(); complaintsRes.refresh(); mealsRes.reload(); }}
     >
       {/* ── 1. Resident Hero Card / Room Details ── */}
       <View style={rdStyles.heroCard}>
@@ -454,7 +476,73 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
         onSubmit={handleGiveNotice}
       />
 
-      {/* Today's menu card is hidden for now (it opens the FOOD modal below). */}
+      {/* ── 3. Meals: what is being served now and next, with "I will eat this" for the kitchen's headcount ── */}
+      {nextMeals.length > 0 && (
+        <Card>
+          <View style={s.row}>
+            <Text style={s.h2}>Meals</Text>
+            <TouchableOpacity onPress={() => navigation?.navigate('FoodMenu')}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.blue }}>Full menu</Text>
+            </TouchableOpacity>
+          </View>
+          {nextMeals.map((m) => {
+            const key = `${m.mealId}@${m.date}`;
+            const when = m.state === 'NOW' ? 'Now' : m.date === today() ? 'Today' : 'Tomorrow';
+            return (
+              <View key={key} style={rdStyles.nextMealRow}>
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={rdStyles.mealName}>{m.name}</Text>
+                    <Badge text={when} color={m.state === 'NOW' ? colors.good : colors.blue} />
+                  </View>
+                  <Text style={[s.muted, { marginTop: 2 }]}>
+                    {clock12(m.startTime)} – {clock12(m.endTime)}
+                  </Text>
+                  <Text style={rdStyles.mealItems} numberOfLines={2}>{m.items.join(', ')}</Text>
+                </View>
+                {m.canRespond && (
+  <View style={rdStyles.mealResponseContainer}>
+  <TouchableOpacity
+    style={[
+      rdStyles.mealCircleButton,
+      { backgroundColor: m.attending ? '#2563EB' : '#EFF6FF' },
+    ]}
+    onPress={() => respondToMeal(m, true)}
+    disabled={respondingMeal === key}
+    accessibilityLabel="Attend meal"
+  >
+    <Ionicons
+      name="checkmark"
+      size={20}
+      color={m.attending ? '#FFFFFF' : '#2563EB'}
+    />
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={[
+      rdStyles.mealCircleButton,
+      { backgroundColor: m.attending === false ? '#DC2626' : '#FEF2F2' },
+    ]}
+    onPress={() => respondToMeal(m, false)}
+    disabled={respondingMeal === key}
+    accessibilityLabel="Not attending meal"
+  >
+    <Ionicons
+      name="close"
+      size={20}
+      color={m.attending === false ? '#FFFFFF' : '#DC2626'}
+    />
+  </TouchableOpacity>
+</View>
+)}
+              </View>
+            );
+          })}
+          <Text style={[s.muted, { fontSize: 11, marginTop: 8 }]}>
+            Tap Attend so the kitchen knows how many to cook for.
+          </Text>
+        </Card>
+      )}
 
       {/* ── 5. All 12 Resident Functionality Modules Grid ── */}
       <Text style={[s.h2, { marginTop: 18, marginBottom: 8 }]}>Resident Services</Text>
@@ -469,7 +557,10 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
           badge={updatedComplaints || complaints.filter((c) => c.status !== 'RESOLVED').length}
           onPress={openComplaints}
         />
-        {/* Mess & Food, Attendance, Visitors, Leave and Documents tiles are hidden for now. */}
+        {nextMeals.length > 0 && (
+          <ServiceTile icon="restaurant" color="#ea580c" label="Food Menu" onPress={() => navigation?.navigate('FoodMenu')} />
+        )}
+        {/* Attendance, Visitors, Leave and Documents tiles are hidden for now. */}
         <ServiceTile icon="clipboard" color="#7c3aed" label="Notice Board" onPress={openNoticeBoard} />
         <ServiceTile icon="call" color="#ef4444" label="Support" onPress={() => setActiveModal('SUPPORT')} />
       </View>
@@ -1029,7 +1120,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
                   <Avatar name={me?.name || 'You'} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>{me?.name || 'You'}</Text>
-                    <Text style={{ fontSize: 11, color: colors.muted }}>Bed {me?.bedNumber || 'B-2'} (You)</Text>
+                    <Text style={{ fontSize: 11, color: colors.muted }}>{me?.bedNumber || 'B-2'} (You)</Text>
                   </View>
                   <Badge text="Current User" color="#2563eb" />
                 </View>
@@ -1227,6 +1318,29 @@ function ServiceTile({
 }
 
 const rdStyles = StyleSheet.create({
+  nextMealRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    marginTop: 8,
+  },
+  mealName: { fontSize: 15, fontWeight: '800', color: colors.text },
+  mealItems: { fontSize: 12, color: '#475569', marginTop: 3 },
+  attendBtn: {
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.good,
+    backgroundColor: '#f0fdf4',
+    minWidth: 78,
+  },
+  attendBtnOn: { backgroundColor: colors.good },
+  attendText: { fontSize: 11, fontWeight: '700', color: colors.good },
   // Notice board pops up in the middle of the screen instead of sliding up from the bottom.
   noticeOverlay: { justifyContent: 'center', paddingHorizontal: 20 },
   noticeCard: { borderRadius: 20, maxHeight: '75%' },
@@ -1640,4 +1754,50 @@ const rdStyles = StyleSheet.create({
     gap: 4,
   },
   emgText: { fontSize: 11, fontWeight: '800', textAlign: 'center' },
+  mealResponseContainer: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 8,
+},
+
+mealCircleButton: {
+  width: 36,
+  height: 36,
+  borderRadius: 18,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+
+mealResponseButton: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 5,
+  paddingHorizontal: 10,
+  paddingVertical: 9,
+  borderRadius: 10,
+  backgroundColor: '#F8FAFC',
+  borderWidth: 1,
+  borderColor: '#E2E8F0',
+},
+
+mealAttendActive: {
+  backgroundColor: '#16A34A',
+  borderColor: '#16A34A',
+},
+
+mealNotAttendActive: {
+  backgroundColor: '#DC2626',
+  borderColor: '#DC2626',
+},
+
+mealResponseText: {
+  fontSize: 11,
+  fontWeight: '700',
+  color: '#334155',
+},
+
+mealResponseTextActive: {
+  color: '#FFFFFF',
+},
 });

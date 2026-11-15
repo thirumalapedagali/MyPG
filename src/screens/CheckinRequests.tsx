@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { get, post } from '../api';
-import { attempt, useResource } from '../hooks';
+import { attempt, useDebounced, usePaged, useResource } from '../hooks';
 import { BookingRequest, Room } from '../types';
 import { Badge, Card, Chips, Empty, Screen, SearchInput, colors, s } from '../ui';
 import { money } from '../utils';
@@ -15,32 +15,29 @@ export default function CheckinRequests() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Pending');
   const [search, setSearch] = useState('');
   const [approving, setApproving] = useState<BookingRequest | null>(null);
-  const { data, error, loading, refreshing, refresh, reload } = useResource(async () => {
-    const [requests, rooms] = await Promise.all([
-      get<BookingRequest[]>('/api/booking-requests?status=ALL'),
-      get<Room[]>('/api/rooms').catch(() => [] as Room[]),
-    ]);
-    return { requests, rooms };
+  const [rooms, setRooms] = useState<Room[]>([]);
+  // Only the selected tab's first page is fetched; other tabs load when tapped, more rows on "Show more".
+  const list = usePaged<BookingRequest>('/api/booking-requests', {
+    status: tab === 'Rejected' ? 'REJECTED' : tab.toUpperCase(),
+    search: useDebounced(search.trim()),
   });
+  const counts = useResource(() => get<{ pending: number }>('/api/booking-requests/count').catch(() => ({ pending: 0 })));
+  const pending = counts.data?.pending ?? 0;
+  const visible = list.items;
+  const reload = () => {
+    list.reload();
+    counts.reload();
+  };
+  const refresh = () => {
+    list.refresh();
+    counts.reload();
+  };
 
-  const requests = data?.requests ?? [];
-  const pending = requests.filter((r) => r.status === 'PENDING').length;
-  const q = search.trim().toLowerCase();
-  const visible = requests
-    .filter((r) => {
-      if (tab === 'Pending') return r.status === 'PENDING';
-      if (tab === 'Approved') return r.status === 'APPROVED';
-      if (tab === 'Rejected') return r.status === 'REJECTED' || r.status === 'CANCELLED';
-      return true;
-    })
-    .filter(
-      (r) =>
-        !q ||
-        r.name.toLowerCase().includes(q) ||
-        (r.mobile ?? '').includes(q) ||
-        (r.roomNumber ?? '').toLowerCase().includes(q) ||
-        (r.bedNumber ?? '').toLowerCase().includes(q)
-    );
+  const startApprove = async (r: BookingRequest) => {
+    // Rooms are only needed to assign a bed, so they are loaded here instead of with every list.
+    if (rooms.length === 0) setRooms(await get<Room[]>('/api/rooms').catch(() => [] as Room[]));
+    setApproving(r);
+  };
 
   const reject = (r: BookingRequest) =>
     Alert.alert('Reject request', `Reject the booking request from ${r.name}?`, [
@@ -61,19 +58,20 @@ export default function CheckinRequests() {
   };
 
   return (
-    <Screen title="Check-in requests" loading={loading} error={error} refreshing={refreshing} onRefresh={refresh}>
-      {data && (
+    <Screen title="Check-in requests" loading={list.initialLoading} error={list.error} refreshing={list.refreshing} onRefresh={refresh}>
+      {!list.initialLoading && (
         <>
           <SearchInput value={search} onChange={setSearch} placeholder="Search name, mobile, room or bed" />
           <Chips options={TABS} value={tab} onChange={setTab} />
           <Text style={[s.muted, { marginBottom: 8 }]}>
-            {pending} pending · {requests.length} total
+            {pending} pending · {list.total} {tab === 'All' ? 'total' : tab.toLowerCase()}
           </Text>
-          {visible.length === 0 && (
+          {list.loading && <ActivityIndicator color={colors.primary} style={{ marginVertical: 16 }} />}
+          {!list.loading && visible.length === 0 && (
             <Empty
               text={
-                requests.length === 0
-                  ? 'No check-in requests yet. Requests from prospective residents will appear here for approval.'
+                tab === 'Pending' && !search.trim()
+                  ? 'No pending check-in requests. Requests from prospective residents will appear here for approval.'
                   : 'No requests match your filter.'
               }
             />
@@ -83,7 +81,7 @@ export default function CheckinRequests() {
             const isApproved = r.status === 'APPROVED';
             const color = isPending ? colors.warn : isApproved ? colors.good : colors.bad;
             const label = isPending ? 'Pending' : isApproved ? 'Approved' : r.status === 'CANCELLED' ? 'Cancelled' : 'Rejected';
-            const where = [r.roomNumber ? `Room ${r.roomNumber}` : 'Any room', r.sectionName, r.bedNumber ? `Bed ${r.bedNumber}` : null]
+            const where = [r.roomNumber ? `Room ${r.roomNumber}` : 'Any room', r.sectionName, r.bedNumber ? `${r.bedNumber}` : null]
               .filter(Boolean)
               .join(' · ');
             return (
@@ -107,7 +105,7 @@ export default function CheckinRequests() {
                   ) : null}
                   {isPending && (
                     <>
-                      <Pill icon="checkmark-circle" label="Approve & assign" solid onPress={() => setApproving(r)} />
+                      <Pill icon="checkmark-circle" label="Approve & assign" solid onPress={() => startApprove(r)} />
                       <Pill icon="close" label="Reject" danger onPress={() => reject(r)} />
                     </>
                   )}
@@ -115,12 +113,17 @@ export default function CheckinRequests() {
               </Card>
             );
           })}
+          {list.hasMore && (
+            <TouchableOpacity style={styles.moreBtn} onPress={list.loadMore} disabled={list.loadingMore}>
+              {list.loadingMore ? <ActivityIndicator color={colors.blue} /> : <Text style={styles.moreBtnText}>Show more</Text>}
+            </TouchableOpacity>
+          )}
         </>
       )}
       {approving && (
         <AddResidentModal
           visible
-          rooms={data?.rooms ?? []}
+          rooms={rooms}
           initialRequest={approving}
           onClose={() => setApproving(null)}
           onAdded={() => {
@@ -185,4 +188,15 @@ const styles = StyleSheet.create({
     borderColor: '#cbd5e1',
   },
   pillText: { fontSize: 12, fontWeight: '700' },
+  moreBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    marginTop: 4,
+  },
+  moreBtnText: { fontSize: 13, fontWeight: '700', color: colors.blue },
 });

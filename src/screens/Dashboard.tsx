@@ -87,8 +87,8 @@ export default function Dashboard({ navigation }: { navigation?: any }) {
                 </Text>
                 <Text style={dashStyles.bannerSub}>
                   {isApartment
-                    ? 'Prospective residents are waiting for flat assignment approval'
-                    : 'Prospective residents are waiting for room & bed assignment approval'}
+                    ? 'New residents are waiting for flat assignment approval'
+                    : 'New residents are waiting for room & bed assignment approval'}
                 </Text>
               </View>
               <TouchableOpacity
@@ -127,7 +127,7 @@ export default function Dashboard({ navigation }: { navigation?: any }) {
               </Text>
               <Text style={s.muted}>
                 {summary.totalDue > 0
-                  ? ``
+                  ? summary.pendingDues.length +' residents pending dues'
                   : 'No Pending Dues'}
               </Text>
             </View>
@@ -171,7 +171,7 @@ export default function Dashboard({ navigation }: { navigation?: any }) {
                 <QuickAction icon="construct" color="#0d9488" label="Complaints" badge={pendingComplaints} onPress={() => go('Complaints')} />
                 <QuickAction icon="call" color="#2563eb" label="Support Contacts" onPress={() => go('SupportContacts')} />
                 {user?.pgId ? <QuickAction icon="images" color="#db2777" label="Property Photos" onPress={() => setPhotosOpen(true)} /> : null}
-                {user?.role !== 'MANAGER' && <QuickAction icon="options" color="#0891b2" label="Property Setup" onPress={() => go('PropertySetup')} />}
+                {/* {user?.role !== 'MANAGER' && <QuickAction icon="options" color="#0891b2" label="Property Setup" onPress={() => go('PropertySetup')} />} */}
               </>
             )}
             <QuickAction icon="business" color={colors.good} label="Add Property" onPress={() => setAddingProperty(true)} />

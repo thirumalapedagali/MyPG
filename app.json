@@ -16,6 +16,7 @@
         "backgroundColor": "#ffffff",
         "foregroundImage": "./assets/MyStay-adaptive.png"
       },
+      "softwareKeyboardLayoutMode": "resize",
       "predictiveBackGestureEnabled": false
     },
     "web": {

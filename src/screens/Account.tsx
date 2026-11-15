@@ -1,4 +1,4 @@
-﻿import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { NavigationProp, ParamListBase, useNavigation } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import {
@@ -278,6 +278,8 @@ export default function Account() {
   if (canManageStaff)
     tiles.push({ icon: 'people', color: '#1565c0', title: 'Manage Users', sub: 'Add, edit & assign roles', onPress: () => nav.navigate('Users') });
   if (canManagePg)
+    tiles.push({ icon: 'restaurant', color: '#ea580c', title: 'Food Menu', sub: 'Weekly meals & who is eating', onPress: () => nav.navigate('FoodMenu') });
+  if (canManagePg)
     tiles.push({ icon: 'logo-whatsapp', color: '#25a244', title: 'WhatsApp Notifications', sub: 'Send updates & reminders', onPress: () => setWhatsappOpen(true) });
   if (user.role === 'SUPER_ADMIN')
     tiles.push({ icon: 'home', color: '#6a1b9a', title: 'Admin Console', sub: 'Add, edit & manage properties', onPress: () => attempt(() => exitPg()) });
@@ -319,6 +321,18 @@ export default function Account() {
         <View style={{ flex: 1 }}>
           <Text style={acct.tileTitle}>Change Password</Text>
           <Text style={acct.tileSub}>Update your account password</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      </TouchableOpacity>
+
+      <Text style={acct.section}>Help us improve</Text>
+      <TouchableOpacity style={acct.feedbackRow} activeOpacity={0.7} onPress={() => nav.navigate('Feedback')}>
+        <View style={[acct.tileIcon, { backgroundColor: '#e3f2fd' }]}>
+          <Ionicons name="chatbubble-ellipses" size={22} color="#1565c0" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={acct.tileTitle}>Send Feedback</Text>
+          <Text style={acct.tileSub}>Suggest an improvement or report a problem</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
       </TouchableOpacity>
@@ -401,6 +415,16 @@ const acct = StyleSheet.create({
   tileIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   tileTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
   tileSub: { fontSize: 11, color: colors.muted, marginTop: 2 },
+  feedbackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#f3f8ff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#cfe2fb',
+    padding: 12,
+  },
   passwordRow: {
     flexDirection: 'row',
     alignItems: 'center',

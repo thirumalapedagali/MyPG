@@ -38,6 +38,9 @@ import PropertyTypes from './src/screens/PropertyTypes';
 import ExploreScreen from './src/screens/ExploreScreen';
 import ResidentDashboard from './src/screens/ResidentDashboard';
 import Notifications from './src/screens/Notifications';
+import Feedback from './src/screens/Feedback';
+import FoodMenu from './src/screens/FoodMenu';
+import AdminFeedback from './src/screens/AdminFeedback';
 import { initNotificationListeners } from './src/notificationStore';
 
 // Keep the native splash up until the animated intro is mounted and takes over.
@@ -184,6 +187,7 @@ function Root() {
           <Stack.Screen name="Lookups" component={Lookups} />
           <Stack.Screen name="PropertyTypes" component={PropertyTypes} />
           <Stack.Screen name="PropertyCatalog" component={PropertyCatalog} />
+          <Stack.Screen name="AdminFeedback" component={AdminFeedback} />
           <Stack.Screen name="Notifications" component={Notifications} />
         </>
       ) : (
@@ -191,6 +195,8 @@ function Root() {
           <Stack.Screen name="Main" component={Main} />
           {user.role !== 'RESIDENT' && <Stack.Screen name="PendingDues" component={PendingDues} />}
           <Stack.Screen name="Announcements" component={Announcements} />
+          <Stack.Screen name="Feedback" component={Feedback} />
+          <Stack.Screen name="FoodMenu" component={FoodMenu} />
           {user.role !== 'RESIDENT' && <Stack.Screen name="SupportContacts" component={SupportContacts} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="PropertySetup" component={PropertySetup} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Complaints" component={Complaints} />}

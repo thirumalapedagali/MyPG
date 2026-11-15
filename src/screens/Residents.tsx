@@ -354,6 +354,18 @@ export default function Residents({
     ]);
 
 
+  const confirmCancelLeaving = (r: Resident) =>
+    Alert.alert('Cancel leaving', `${r.name} will stay. Remove the planned checkout on ${r.vacateOn}?`, [
+      { text: 'Keep checkout', style: 'cancel' },
+      {
+        text: 'Cancel checkout',
+        style: 'destructive',
+        onPress: async () => {
+          if (await attempt(() => del(`/api/residents/${r.id}/notice`))) reload();
+        },
+      },
+    ]);
+
   const confirmRemove = (r: Resident) =>
     Alert.alert('Remove resident', `Remove ${r.name}? Their payment history, bed allocation and login are deleted too.`, [
       { text: 'Cancel', style: 'cancel' },
@@ -384,6 +396,7 @@ export default function Residents({
           onMoveRoom={() => setMovingResident(selectedResident)}
           onVacateBed={() => confirmVacateBed(selectedResident)}
           onVacateResident={() => setVacatingResident(selectedResident)}
+          onCancelLeaving={() => confirmCancelLeaving(selectedResident)}
           onRejoin={() => setRejoiningResident(selectedResident)}
           onRemove={() => confirmRemove(selectedResident)}
           onCall={() => handleCall(selectedResident.phone)}
@@ -441,7 +454,7 @@ export default function Residents({
             title={`Check out - ${vacatingResident.name}`}
             submitLabel="Confirm Checkout"
             fields={[
-              { key: 'checkOutDate', label: 'Check-out Date', initial: today(), date: true },
+              { key: 'checkOutDate', label: 'Check-out Date (a future date only schedules it)', initial: today(), date: true },
               {
                 key: 'returnedDeposit',
                 label: 'Returned Deposit Amount (₹)',
@@ -472,8 +485,13 @@ export default function Residents({
               )
                 return false;
 
+              const scheduled = v.checkOutDate > today();
+              const name = vacatingResident.name;
               setVacatingResident(null);
               reload();
+              if (scheduled) {
+                Alert.alert('Checkout scheduled', `${name} stays until ${v.checkOutDate}. The bed shows as getting vacated and is released on that date.`);
+              }
             }}
           />
         )}
@@ -849,6 +867,7 @@ function ResidentDetailView({
   onMoveRoom,
   onVacateBed,
   onVacateResident,
+  onCancelLeaving,
   onRejoin,
   onRemove,
   onCall,
@@ -865,6 +884,7 @@ function ResidentDetailView({
   onMoveRoom?: () => void;
   onVacateBed?: () => void;
   onVacateResident?: () => void;
+  onCancelLeaving?: () => void;
   onRejoin?: () => void;
   onRemove: () => void;
   onCall: () => void;
@@ -1174,6 +1194,18 @@ function ResidentDetailView({
                 <Text style={detailStyles.activePillText}>Monthly Resident</Text>
               </View>
             )}
+            {resident.status !== 'CHECKED_OUT' && resident.noticeStatus === 'APPROVED' && resident.vacateOn ? (
+              <TouchableOpacity
+                style={[detailStyles.activePill, { backgroundColor: '#fef2f2', borderColor: '#fecaca', flexDirection: 'row', alignItems: 'center', gap: 4 }]}
+                onPress={onCancelLeaving}
+                disabled={!onCancelLeaving}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="exit-outline" size={12} color="#dc2626" />
+                <Text style={[detailStyles.activePillText, { color: '#dc2626' }]}>Getting vacated: {resident.vacateOn}</Text>
+                {onCancelLeaving && <Ionicons name="close-circle" size={13} color="#dc2626" />}
+              </TouchableOpacity>
+            ) : null}
             <View style={detailStyles.sincePill}>
               <Ionicons name="calendar" size={11} color="#16a34a" />
               <Text style={detailStyles.sincePillText}>
@@ -2245,6 +2277,12 @@ const detailStyles = StyleSheet.create({
 
 const compactLabel = { marginTop: 8, marginBottom: 4 } as const;
 
+// Treat the common backend availability labels consistently.
+const isVacantBed = (bed: Bed): boolean => {
+  const status = String(bed.status ?? '').trim().toUpperCase().replace(/[ -]+/g, '_');
+  return ['VACANT', 'AVAILABLE', 'FREE', 'UNOCCUPIED', 'EMPTY'].includes(status);
+};
+
 export function AddResidentModal({
   visible,
   rooms,
@@ -2327,7 +2365,7 @@ export function AddResidentModal({
     if (!currentRoom?.sections) return [];
     return currentRoom.sections.filter((sec) => {
       if (sec.beds && sec.beds.length > 0) {
-        return sec.beds.some((b) => b.status === 'VACANT');
+        return sec.beds.some((b) => isVacantBed(b));
       }
       return true;
     });
@@ -2362,7 +2400,7 @@ export function AddResidentModal({
     if (!currentRoom) return [];
     if (currentSection && currentSection.beds) {
       return currentSection.beds
-        .filter((b) => b.status === 'VACANT')
+        .filter((b) => isVacantBed(b))
         .map((b) => ({
           bed: b,
           sectionName: currentSection.sectionName,
@@ -2374,7 +2412,7 @@ export function AddResidentModal({
       for (const sec of currentRoom.sections) {
         if (sec.beds) {
           for (const b of sec.beds) {
-            if (b.status === 'VACANT') {
+            if (isVacantBed(b)) {
               list.push({
                 bed: b,
                 sectionName: sec.sectionName,
@@ -2405,6 +2443,11 @@ export function AddResidentModal({
   const [photo, setPhoto] = useState<PickedFile[]>([]);
   const [idCard, setIdCard] = useState<PickedFile[]>([]);
   const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState<1 | 2>(1);
+
+  useEffect(() => {
+    if (visible) setStep(1);
+  }, [visible]);
 
   // Sync pricing defaults when section or room changes (unless initialRequest had explicit values)
   useEffect(() => {
@@ -2573,7 +2616,7 @@ export function AddResidentModal({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={s.overlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={s.sheet}>
+        <View style={[s.sheet, { height: step === 1 ? '68%' : '88%', maxHeight: step === 1 ? '68%' : '88%', minHeight: 0, flexShrink: 1 }]}>
           <View style={s.handle} />
           <View style={s.sheetHeader}>
             <View>
@@ -2587,7 +2630,31 @@ export function AddResidentModal({
             </Pressable>
           </View>
 
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.sheetBody}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: step === 1 ? '#2563eb' : '#16a34a', alignItems: 'center', justifyContent: 'center' }}>
+                {step === 1 ? <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>1</Text> : <Ionicons name="checkmark" size={15} color="#fff" />}
+              </View>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: step === 1 ? '#2563eb' : '#16a34a' }}>Select Room</Text>
+            </View>
+            <View style={{ flex: 1, height: 2, backgroundColor: step === 2 ? '#2563eb' : '#e2e8f0' }} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: step === 2 ? '#2563eb' : '#e2e8f0', alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: step === 2 ? '#fff' : '#64748b', fontWeight: '700', fontSize: 12 }}>2</Text>
+              </View>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: step === 2 ? '#2563eb' : '#94a3b8' }}>Resident Details</Text>
+            </View>
+          </View>
+
+          <ScrollView
+            style={{ flex: 1, minHeight: 0 }}
+            contentContainerStyle={[s.sheetBody, { paddingBottom: 24 }]} 
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            showsVerticalScrollIndicator
+          >
+            {step === 1 && (
+              <>
             {/* ── 1. FLOOR SELECTION DROPDOWN ── */}
             <Text style={[s.label, compactLabel, { marginTop: 0 }]}>1. Select Floor *</Text>
             <View style={allocStyles.card}>
@@ -2613,7 +2680,12 @@ export function AddResidentModal({
               </TouchableOpacity>
 
               {openDropdown === 'floor' && (
-                <View style={allocStyles.optionsList}>
+                <ScrollView
+                  style={allocStyles.optionsList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator
+                >
                   {floorOptions.map((f) => {
                     const isSelected = f.floorName === selectedFloor;
                     return (
@@ -2658,7 +2730,7 @@ export function AddResidentModal({
                       </TouchableOpacity>
                     );
                   })}
-                </View>
+                </ScrollView>
               )}
             </View>
 
@@ -2711,7 +2783,12 @@ export function AddResidentModal({
               </TouchableOpacity>
 
               {openDropdown === 'room' && (
-                <View style={allocStyles.optionsList}>
+                <ScrollView
+                  style={allocStyles.optionsList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator
+                >
                   {roomsOnFloor.length === 0 && (
                     <View style={{ padding: 14 }}>
                       <Text style={{ fontSize: 13, color: colors.muted }}>
@@ -2765,7 +2842,7 @@ export function AddResidentModal({
                       </TouchableOpacity>
                     );
                   })}
-                </View>
+                </ScrollView>
               )}
             </View>
 
@@ -2801,7 +2878,12 @@ export function AddResidentModal({
               </TouchableOpacity>
 
               {openDropdown === 'section' && currentRoom && (
-                <View style={allocStyles.optionsList}>
+                <ScrollView
+                  style={allocStyles.optionsList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator
+                >
                   {currentRoom.sections && currentRoom.sections.length > 0 && availableSections.length === 0 && (
                     <View style={{ padding: 14 }}>
                       <Text style={{ fontSize: 13, color: '#dc2626', fontWeight: '600' }}>
@@ -2833,7 +2915,7 @@ export function AddResidentModal({
                   {availableSections.map((sec) => {
                     const isSelected = sec.id === selectedSectionId;
                     const vacantInSec = sec.beds
-                      ? sec.beds.filter((b) => b.status === 'VACANT').length
+                      ? sec.beds.filter((b) => isVacantBed(b)).length
                       : sec.capacity;
                     return (
                       <TouchableOpacity
@@ -2879,7 +2961,7 @@ export function AddResidentModal({
                       </TouchableOpacity>
                     );
                   })}
-                </View>
+                </ScrollView>
               )}
             </View>
 
@@ -2911,7 +2993,58 @@ export function AddResidentModal({
               </>
             )}
 
+            <Pressable
+              style={[s.saveBtn, { backgroundColor: '#2563eb', marginTop: 18 }]}
+              onPress={() => {
+                if (
+                  !currentRoom ||
+                  Number(currentRoom.vacant ?? 0) <= 0 ||
+                  (
+                    vacantBeds.length === 0 &&
+                    (
+                      (currentSection?.beds?.length ?? 0) > 0 ||
+                      (currentRoom.sections?.length ?? 0) > 0
+                    )
+                  )
+                ) {
+                  Alert.alert('Select available bed', 'Please select a room/section with at least one vacant bed.');
+                  return;
+                }
+                // Validate a selected bed only when the room has individual bed records.
+                // Flats/rooms with sections: [] use room-level vacancy and submit bedId: null.
+                if (
+                  selectedBedId != null &&
+                  !vacantBeds.some((item) => item.bed.id === selectedBedId)
+                ) {
+                  Alert.alert('Select available bed', 'The selected bed is no longer available. Please choose another bed.');
+                  return;
+                }
+                setStep(2);
+              }}
+            >
+              <Text style={s.saveText}>Continue to Resident Details</Text>
+              <Ionicons name="arrow-forward" size={17} color="#fff" />
+            </Pressable>
+              </>
+            )}
+
+            {step === 2 && (
+              <>
             {/* ── 5. RESIDENT INFORMATION ── */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <Text style={[s.label, compactLabel, { marginTop: 0 }]}>Resident Information</Text>
+              <Pressable onPress={() => setStep(1)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, padding: 6 }}>
+                <Ionicons name="create-outline" size={14} color="#2563eb" />
+                <Text style={{ color: '#2563eb', fontSize: 12, fontWeight: '700' }}>Change room</Text>
+              </Pressable>
+            </View>
+            <View style={{ backgroundColor: '#eff6ff', borderRadius: 10, padding: 11, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="bed-outline" size={18} color="#2563eb" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: '#1e3a8a', fontSize: 13, fontWeight: '700' }}>Room {currentRoom?.number} · {currentSection?.sectionName || 'Main Room'}</Text>
+                <Text style={{ color: '#475569', fontSize: 11 }}>{selectedBedId ? vacantBeds.find((b) => b.bed.id === selectedBedId)?.bed.bedNumber : 'Auto-assign available bed'}</Text>
+              </View>
+            </View>
             <Text style={[s.label, compactLabel]}>Stay Duration / Billing Type *</Text>
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
               <Pressable
@@ -3028,15 +3161,27 @@ export function AddResidentModal({
               </>
             )}
 
-            <Pressable
-              style={[s.saveBtn, busy && { opacity: 0.6 }]}
-              onPress={submit}
-              disabled={busy}
-            >
-              <Text style={s.saveText}>
-                {busy ? 'Assigning...' : initialRequest ? 'Approve & Allocate Bed' : 'Add Resident'}
-              </Text>
-            </Pressable>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+              <Pressable
+                style={{ flex: 0.8, height: 46, borderRadius: 10, borderWidth: 1, borderColor: '#cbd5e1', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 5 }}
+                onPress={() => setStep(1)}
+                disabled={busy}
+              >
+                <Ionicons name="arrow-back" size={16} color="#334155" />
+                <Text style={{ color: '#334155', fontWeight: '700' }}>Back</Text>
+              </Pressable>
+              <Pressable
+                style={[s.saveBtn, { flex: 1.5, marginTop: 0 }, busy && { opacity: 0.6 }]}
+                onPress={submit}
+                disabled={busy}
+              >
+                <Text style={s.saveText}>
+                  {busy ? 'Assigning...' : initialRequest ? 'Approve & Allocate Bed' : 'Add Resident'}
+                </Text>
+              </Pressable>
+            </View>
+              </>
+            )}
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
@@ -3093,7 +3238,7 @@ function MoveResidentModal({
     for (const sec of targetRoom.sections) {
       if (sec.beds) {
         for (const b of sec.beds) {
-          if (b.status === 'VACANT') {
+          if (isVacantBed(b)) {
             vacantBeds.push({
               bed: b,
               sectionName: sec.sectionName,
@@ -3346,7 +3491,7 @@ function RejoinResidentModal({
     for (const sec of targetRoom.sections) {
       if (sec.beds) {
         for (const b of sec.beds) {
-          if (b.status === 'VACANT') {
+          if (isVacantBed(b)) {
             vacantBeds.push({
               bed: b,
               sectionName: sec.sectionName,

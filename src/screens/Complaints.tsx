@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { get, put } from '../api';
-import { attempt, useResource } from '../hooks';
+import { attempt, useDebounced, usePaged, useResource } from '../hooks';
 import { Complaint, ComplaintStatus } from '../types';
 import { Badge, Card, Chips, Empty, FormModal, Screen, SearchInput, colors, s } from '../ui';
 
@@ -20,26 +20,22 @@ export default function Complaints() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Open');
   const [search, setSearch] = useState('');
   const [resolving, setResolving] = useState<Complaint | null>(null);
-  const { data, error, loading, refreshing, refresh, reload } = useResource(() => get<Complaint[]>('/api/complaints'));
-
-  const all = data ?? [];
-  const open = all.filter((c) => c.status === 'OPEN').length;
-  const q = search.trim().toLowerCase();
-  const visible = all
-    .filter((c) => {
-      if (tab === 'Open') return c.status === 'OPEN';
-      if (tab === 'In progress') return c.status === 'IN_PROGRESS';
-      if (tab === 'Resolved') return c.status === 'RESOLVED';
-      return true;
-    })
-    .filter(
-      (c) =>
-        !q ||
-        c.title.toLowerCase().includes(q) ||
-        (c.residentName ?? '').toLowerCase().includes(q) ||
-        (c.roomNumber ?? '').toLowerCase().includes(q) ||
-        c.categoryLabel.toLowerCase().includes(q)
-    );
+  // Only the selected tab's first page is fetched; other tabs load when tapped, more rows on "Show more".
+  const list = usePaged<Complaint>('/api/complaints', {
+    status: tab === 'Open' ? 'OPEN' : tab === 'In progress' ? 'IN_PROGRESS' : tab === 'Resolved' ? 'RESOLVED' : 'ALL',
+    search: useDebounced(search.trim()),
+  });
+  const counts = useResource(() => get<{ pending: number }>('/api/complaints/count').catch(() => ({ pending: 0 })));
+  const open = counts.data?.pending ?? 0;
+  const visible = list.items;
+  const reload = () => {
+    list.reload();
+    counts.reload();
+  };
+  const refresh = () => {
+    list.refresh();
+    counts.reload();
+  };
 
   const setStatus = async (c: Complaint, status: ComplaintStatus, resolutionNotes?: string | null) => {
     const ok = await attempt(() =>
@@ -50,25 +46,26 @@ export default function Complaints() {
   };
 
   return (
-    <Screen title="Complaints" loading={loading} error={error} refreshing={refreshing} onRefresh={refresh}>
-      {data && (
+    <Screen title="Complaints" loading={list.initialLoading} error={list.error} refreshing={list.refreshing} onRefresh={refresh}>
+      {!list.initialLoading && (
         <>
           <SearchInput value={search} onChange={setSearch} placeholder="Search resident, room, title or category" />
           <Chips options={TABS} value={tab} onChange={setTab} />
           <Text style={[s.muted, { marginBottom: 8 }]}>
-            {open} waiting · {all.length} total
+            {open} waiting · {list.total} {tab === 'All' ? 'total' : tab.toLowerCase()}
           </Text>
-          {visible.length === 0 && (
+          {list.loading && <ActivityIndicator color={colors.primary} style={{ marginVertical: 16 }} />}
+          {!list.loading && visible.length === 0 && (
             <Empty
               text={
-                all.length === 0
-                  ? 'No complaints. When a resident raises one, it will appear here for you to resolve.'
+                tab === 'Open' && !search.trim()
+                  ? 'No open complaints. When a resident raises one, it will appear here for you to resolve.'
                   : 'No complaints match your filter.'
               }
             />
           )}
           {visible.map((c) => {
-            const where = [c.roomNumber ? `Room ${c.roomNumber}` : null, c.bedNumber ? `Bed ${c.bedNumber}` : null]
+            const where = [c.roomNumber ? `Room ${c.roomNumber}` : null, c.bedNumber ? `${c.bedNumber}` : null]
               .filter(Boolean)
               .join(' · ');
             return (
@@ -106,6 +103,11 @@ export default function Complaints() {
               </Card>
             );
           })}
+          {list.hasMore && (
+            <TouchableOpacity style={styles.moreBtn} onPress={list.loadMore} disabled={list.loadingMore}>
+              {list.loadingMore ? <ActivityIndicator color={colors.blue} /> : <Text style={styles.moreBtnText}>Show more</Text>}
+            </TouchableOpacity>
+          )}
         </>
       )}
 
@@ -179,4 +181,15 @@ const styles = StyleSheet.create({
     borderColor: '#cbd5e1',
   },
   pillText: { fontSize: 12, fontWeight: '700' },
+  moreBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    marginTop: 4,
+  },
+  moreBtnText: { fontSize: 13, fontWeight: '700', color: colors.blue },
 });

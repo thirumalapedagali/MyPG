@@ -1668,6 +1668,7 @@ export function AddPropertyModal({
                 'Car Parking': 'car-outline',
                 Watchman: 'shield-checkmark-outline',
                 'Wi-Fi': 'wifi-outline',
+                TV: 'tv-outline',
                 'Power Backup': 'flash-outline',
                 'RO Drinking Water': 'water-outline',
                 'Washing Machine': 'shirt-outline',
@@ -1675,7 +1676,6 @@ export function AddPropertyModal({
                 'CCTV Security': 'videocam-outline',
                 'Finger Print': 'finger-print-outline',
                 Geyser: 'thermometer-outline',
-                'Daily Cleaning': 'sparkles-outline',
                 'Food / Mess': 'restaurant-outline',
                 Gym: 'fitness-outline',
               };

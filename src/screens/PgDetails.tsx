@@ -561,7 +561,7 @@ export default function PgDetails({
         <View style={[styles.bottomBar, { paddingBottom: 12 + Math.max(insets.bottom, 16) }]}>
           <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={styles.bottomBarTitle}>
-              {isApartment ? `Flat ${selectedRoom.number}` : `Room ${selectedRoom.number} · Bed ${selectedBed.bedNumber}`}
+              {isApartment ? `Flat ${selectedRoom.number}` : `Room ${selectedRoom.number} · ${selectedBed.bedNumber}`}
             </Text>
             <Text style={styles.bottomBarPrice}>
               {money(selectedBed.rent)}<Text style={{ fontSize: 11, fontWeight: '400', color: colors.muted }}>/mo</Text>
@@ -604,7 +604,7 @@ export default function PgDetails({
               <View>
                 <Text style={s.sheetTitle}>Request Bed Booking</Text>
                 <Text style={s.muted}>
-                  {pg?.name} · Room {selectedRoom?.number} · Bed {selectedBed?.bedNumber}
+                  {pg?.name} · Room {selectedRoom?.number} · {selectedBed?.bedNumber}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setShowInquiryModal(false)} hitSlop={10}>

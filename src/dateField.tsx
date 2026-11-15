@@ -143,3 +143,82 @@ export function DateField({
     </>
   );
 }
+
+/** "07:30" -> a Date today at that time (the picker needs a Date). */
+const timeToDate = (value: string) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  const d = new Date();
+  d.setHours(m ? +m[1] : 8, m ? +m[2] : 0, 0, 0);
+  return d;
+};
+const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const clockText = (value: string) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!m) return '';
+  const h = +m[1];
+  return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+};
+
+/** A time of day the user picks from the phone's clock instead of typing. The value is `HH:mm` (24-hour). */
+export function TimeField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
+  const [iosOpen, setIosOpen] = useState(false);
+  const [draft, setDraft] = useState(new Date());
+
+  const open = () => {
+    const current = timeToDate(value);
+    if (Platform.OS === 'ios') {
+      setDraft(current);
+      setIosOpen(true);
+      return;
+    }
+    DateTimePickerAndroid.open({ value: current, mode: 'time', is24Hour: false, onValueChange: (_e, at) => onChange(hhmm(at)) });
+  };
+
+  const shown = clockText(value);
+  return (
+    <>
+      <Pressable
+        onPress={open}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          backgroundColor: colors.bg,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: colors.border,
+          paddingHorizontal: 12,
+          height: 44,
+        }}
+      >
+        <Ionicons name="time-outline" size={18} color={colors.muted} />
+        <Text style={{ flex: 1, fontSize: 14, color: shown ? colors.text : colors.muted }}>{shown || placeholder || 'Select time'}</Text>
+      </Pressable>
+
+      {Platform.OS === 'ios' && (
+        <Modal visible={iosOpen} transparent animationType="slide" onRequestClose={() => setIosOpen(false)}>
+          <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' }}>
+            <Pressable style={{ flex: 1 }} onPress={() => setIosOpen(false)} />
+            <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', padding: 16 }}>
+                <Pressable onPress={() => setIosOpen(false)} hitSlop={8}>
+                  <Text style={{ fontSize: 15, color: colors.muted }}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  hitSlop={8}
+                  onPress={() => {
+                    onChange(hhmm(draft));
+                    setIosOpen(false);
+                  }}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: colors.primary }}>Done</Text>
+                </Pressable>
+              </View>
+              <DateTimePicker value={draft} mode="time" display="spinner" onValueChange={(_e, d) => setDraft(d)} />
+            </View>
+          </View>
+        </Modal>
+      )}
+    </>
+  );
+}

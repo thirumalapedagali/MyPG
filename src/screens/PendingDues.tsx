@@ -141,7 +141,7 @@ export default function PendingDues() {
                     <Text style={s.muted}>
                       {isApartment ? 'Flat' : 'Room'} {d.roomNumber ?? '-'}
                       {d.sectionName && d.sectionName !== 'Main Room' ? ` · ${d.sectionName}` : ''}
-                      {d.bedNumber ? ` · Bed ${d.bedNumber}` : ''}
+                      {d.bedNumber ? ` · ${d.bedNumber}` : ''}
                     </Text>
                     
                     {/* Days pending and last payment date */}

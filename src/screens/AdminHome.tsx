@@ -140,6 +140,13 @@ export default function AdminHome({ navigation }: { navigation?: any }) {
                 <Ionicons name="sparkles" size={16} color={colors.warn} />
                 <Text style={{ color: colors.warn, fontWeight: '700', fontSize: 13 }}>Amenities & fields</Text>
               </Pressable>
+              <Pressable
+                onPress={() => go('AdminFeedback')}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#e0f2fe', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 }}
+              >
+                <Ionicons name="chatbubble-ellipses" size={16} color="#0284c7" />
+                <Text style={{ color: '#0284c7', fontWeight: '700', fontSize: 13 }}>User feedback</Text>
+              </Pressable>
             </View>
           </Card>
 

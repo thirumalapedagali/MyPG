@@ -296,6 +296,20 @@ export type AdminStats = {
   pendingRegistrations: number;
 };
 
+export type FeedbackItem = {
+  id: number;
+  type: 'SUGGESTION' | 'BUG' | 'OTHER';
+  message: string;
+  status: 'NEW' | 'REVIEWED';
+  username: string;
+  role: string;
+  pgName: string | null;
+  createdAt: string;
+  reviewedAt: string | null;
+};
+
+
+
 export type OwnerRegistration = {
   id: number;
   propertyName: string;
@@ -591,6 +605,29 @@ export type Complaint = {
   residentPhone?: string | null;
   roomNumber?: string | null;
   bedNumber?: string | null;
+};
+
+/** One meal of the property's weekly menu; `dayOfWeek` is 1 = Monday ... 7 = Sunday and times are `HH:mm`. */
+export type MenuMeal = {
+  id: number;
+  dayOfWeek: number;
+  name: string;
+  startTime: string;
+  endTime: string;
+  items: string[];
+};
+
+/** A meal on a date as the resident sees it (today / tomorrow). */
+export type MealOccurrence = {
+  mealId: number;
+  name: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  items: string[];
+  state: 'NOW' | 'UPCOMING';
+  attending: boolean;
+  canRespond: boolean;
 };
 
 export type FoodMenu = {

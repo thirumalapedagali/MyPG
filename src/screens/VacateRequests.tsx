@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { del, get, post } from '../api';
-import { attempt, useResource } from '../hooks';
+import { attempt, useDebounced, usePaged, useResource } from '../hooks';
 import { Resident } from '../types';
 import { Badge, Card, Chips, Empty, Screen, SearchInput, colors, s, FormModal } from '../ui';
 import { money } from '../utils';
@@ -17,28 +17,22 @@ export default function VacateRequests({ navigation }: { navigation?: any }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Pending');
   const [search, setSearch] = useState('');
   const [approvingNoticeFor, setApprovingNoticeFor] = useState<Resident | null>(null);
-  const { data, error, loading, refreshing, refresh, reload } = useResource(() => get<Resident[]>('/api/residents'));
-
-  const withNotice = (data ?? [])
-    .filter((r) => r.noticeStatus)
-    .sort((a, b) => (a.vacateOn ?? '').localeCompare(b.vacateOn ?? ''));
-  const pending = withNotice.filter((r) => r.noticeStatus === 'REQUESTED').length;
-  const q = search.trim().toLowerCase();
-  const visible = withNotice
-    .filter((r) => {
-      if (tab === 'Pending') return r.noticeStatus === 'REQUESTED';
-      if (tab === 'Approved') return r.noticeStatus === 'APPROVED';
-      if (tab === 'Declined') return r.noticeStatus === 'REJECTED';
-      return true;
-    })
-    .filter(
-      (r) =>
-        !q ||
-        r.name.toLowerCase().includes(q) ||
-        (r.phone ?? '').includes(q) ||
-        (r.roomNumber ?? '').toLowerCase().includes(q) ||
-        (r.bedNumber ?? '').toLowerCase().includes(q)
-    );
+  // Only the selected tab's first page is fetched; other tabs load when tapped, more rows on "Show more".
+  const list = usePaged<Resident>('/api/residents/notices', {
+    status: tab === 'Pending' ? 'REQUESTED' : tab === 'Declined' ? 'REJECTED' : tab === 'Approved' ? 'APPROVED' : 'ALL',
+    search: useDebounced(search.trim()),
+  });
+  const counts = useResource(() => get<{ pending: number }>('/api/residents/notice-count').catch(() => ({ pending: 0 })));
+  const pending = counts.data?.pending ?? 0;
+  const visible = list.items;
+  const reload = () => {
+    list.reload();
+    counts.reload();
+  };
+  const refresh = () => {
+    list.refresh();
+    counts.reload();
+  };
 
   const decide = (r: Resident, approve: boolean) => {
     if (approve) {
@@ -74,19 +68,20 @@ export default function VacateRequests({ navigation }: { navigation?: any }) {
     ]);
 
   return (
-    <Screen title="Vacate requests" loading={loading} error={error} refreshing={refreshing} onRefresh={refresh}>
-      {data && (
+    <Screen title="Vacate requests" loading={list.initialLoading} error={list.error} refreshing={list.refreshing} onRefresh={refresh}>
+      {!list.initialLoading && (
         <>
           <SearchInput value={search} onChange={setSearch} placeholder="Search name, mobile, room or bed" />
           <Chips options={TABS} value={tab} onChange={setTab} />
           <Text style={[s.muted, { marginBottom: 8 }]}>
-            {pending} pending · {withNotice.length} total
+            {pending} pending · {list.total} {tab === 'All' ? 'total' : tab.toLowerCase()}
           </Text>
-          {visible.length === 0 && (
+          {list.loading && <ActivityIndicator color={colors.primary} style={{ marginVertical: 16 }} />}
+          {!list.loading && visible.length === 0 && (
             <Empty
               text={
-                withNotice.length === 0
-                  ? 'No vacate requests. When a resident gives notice, it will appear here for approval.'
+                tab === 'Pending' && !search.trim()
+                  ? 'No pending vacate requests. When a resident gives notice, it will appear here for approval.'
                   : 'No requests match your filter.'
               }
             />
@@ -126,6 +121,11 @@ export default function VacateRequests({ navigation }: { navigation?: any }) {
               </Card>
             );
           })}
+          {list.hasMore && (
+            <TouchableOpacity style={styles.moreBtn} onPress={list.loadMore} disabled={list.loadingMore}>
+              {list.loadingMore ? <ActivityIndicator color={colors.blue} /> : <Text style={styles.moreBtnText}>Show more</Text>}
+            </TouchableOpacity>
+          )}
         </>
       )}
 
@@ -216,4 +216,15 @@ const styles = StyleSheet.create({
     borderColor: '#cbd5e1',
   },
   pillText: { fontSize: 12, fontWeight: '700' },
+  moreBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    marginTop: 4,
+  },
+  moreBtnText: { fontSize: 13, fontWeight: '700', color: colors.blue },
 });
