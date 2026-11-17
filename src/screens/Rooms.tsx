@@ -22,6 +22,7 @@ import { PictureTarget, PicturesSheet } from '../pictures';
 import { AcType, Room, RoomType, SharingOption, SharingType } from '../types';
 import { Badge, Button, Chips, Empty, FormModal, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
 import { money } from '../utils';
+import { AddResidentModal } from './Residents';
 
 const STATUS_FILTERS = ['All', 'Vacant', 'Full'] as const;
 
@@ -37,7 +38,7 @@ const ROOM_TYPES: { key: RoomType; label: string }[] = [
 const FLAT_TYPES = ROOM_TYPES.filter((t) => t.key.startsWith('FLAT_'));
 
 /** "Ground Floor", "1st Floor", "2nd Floor"... for a PG with `total` floors above ground. */
-function buildFloorNames(total?: number | null): string[] {
+export function buildFloorNames(total?: number | null): string[] {
   const count = total && total > 0 ? total : 3;
   const list = ['Ground Floor'];
   for (let i = 1; i <= count; i++) {
@@ -47,16 +48,24 @@ function buildFloorNames(total?: number | null): string[] {
   return list;
 }
 
-const ALL_FLOORS = 'All Floors';
+export const ALL_FLOORS = 'All Floors';
 
 /** Chip label for a floor: "1st Floor" -> "1st", "Ground Floor" -> "G". */
-const shortFloor = (name: string) => {
+export const shortFloor = (name: string) => {
   const short = name.replace(/\s+floor$/i, '');
   return short === 'Ground' ? 'G' : short;
 };
 
 /** Room list. Owners/managers can add/delete; residents see read-only availability. */
-export default function Rooms({ editable = true, addSignal }: { editable?: boolean; addSignal?: number }) {
+export default function Rooms({
+  editable = true,
+  addSignal,
+  navigation,
+}: {
+  editable?: boolean;
+  addSignal?: number;
+  navigation?: any;
+}) {
   const { user } = useAuth();
   const { data, error, loading, refreshing, refresh, reload } = useResource(() => get<Room[]>('/api/rooms'));
   const [floorFilter, setFloorFilter] = useState<string>(ALL_FLOORS);
@@ -73,6 +82,8 @@ export default function Rooms({ editable = true, addSignal }: { editable?: boole
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<(typeof STATUS_FILTERS)[number]>('All');
   const [expandedRoomId, setExpandedRoomId] = useState<number | null>(null);
+  // A vacant bed the owner tapped: opens Add Resident with that bed already chosen.
+  const [addingToBed, setAddingToBed] = useState<{ roomId: number; sectionId: number; bedId: number } | null>(null);
 
   const all = data ?? [];
   const q = search.trim().toLowerCase();
@@ -323,9 +334,19 @@ export default function Rooms({ editable = true, addSignal }: { editable?: boole
                             // Occupied, but the occupant's notice is approved: free from that date.
                             const leaving = !isVacant && !!bed.availableFrom;
                             const tone = isVacant ? colors.good : leaving ? colors.warn : colors.bad;
+                            // Staff: a vacant bed starts Add Resident, an occupied bed opens that resident.
+                            const onBedPress = !editable
+                              ? undefined
+                              : isVacant
+                                ? () => setAddingToBed({ roomId: room.id, sectionId: sec.id, bedId: bed.id })
+                                : bed.residentId != null
+                                  ? () => navigation?.navigate?.('Residents', { residentId: bed.residentId })
+                                  : undefined;
                             return (
-                              <View
+                              <Pressable
                                 key={bed.id}
+                                disabled={!onBedPress}
+                                onPress={onBedPress}
                                 style={[
                                   styles.bedChip,
                                   {
@@ -344,7 +365,7 @@ export default function Rooms({ editable = true, addSignal }: { editable?: boole
                                   {bed.residentName && editable ? ': ' + bed.residentName : isVacant ? ' (Vacant)' : ' (Occupied)'}
                                   {leaving ? ` · free from ${bed.availableFrom}` : ''}
                                 </Text>
-                              </View>
+                              </Pressable>
                             );
                           })}
                         </View>
@@ -388,6 +409,20 @@ export default function Rooms({ editable = true, addSignal }: { editable?: boole
         onClose={() => setRentRoom(null)}
         onSubmit={saveRent}
       />
+
+      {/* Mounted only while open so the form starts fresh on the tapped bed. */}
+      {addingToBed && (
+        <AddResidentModal
+          visible
+          rooms={all}
+          initialBed={addingToBed}
+          onClose={() => setAddingToBed(null)}
+          onAdded={() => {
+            setAddingToBed(null);
+            reload();
+          }}
+        />
+      )}
 
       <AddRoomModal
         visible={open}

@@ -130,6 +130,9 @@ export default function PgDetails({
     Linking.openURL(`https://wa.me/91${clean}?text=${encodeURIComponent(msg)}`);
   };
 
+  /** Earliest move-in date: today, or the day the selected bed is free if that is later. */
+  const earliestMoveIn = selectedBed?.availableFrom && selectedBed.availableFrom > today() ? selectedBed.availableFrom : today();
+
   const handleSelectBed = (room: PublicRoom, bed: PublicBed) => {
     if (selectedBed?.id === bed.id) {
       setSelectedBed(null);
@@ -145,6 +148,10 @@ export default function PgDetails({
   const submitInquiry = async () => {
     if (!inquiryName.trim() || !inquiryMobile.trim()) {
       Alert.alert('Missing Info', 'Please enter your name and mobile number.');
+      return;
+    }
+    if (inquiryDate < earliestMoveIn) {
+      Alert.alert('Check the date', `This bed is free from ${earliestMoveIn}. Choose that date or later.`);
       return;
     }
     setSubmitting(true);
@@ -633,7 +640,12 @@ export default function PgDetails({
               />
 
               <Text style={s.label}>Expected Move-in / Joining Date *</Text>
-              <DateField value={inquiryDate} onChange={setInquiryDate} min={today()} />
+              <DateField value={inquiryDate} onChange={setInquiryDate} min={earliestMoveIn} />
+              {earliestMoveIn > today() && (
+                <Text style={[s.muted, { fontSize: 11, marginTop: 4 }]}>
+                  This bed is occupied until {earliestMoveIn}. You can move in on that date or later.
+                </Text>
+              )}
 
               <Text style={s.label}>Message / Notes (Optional)</Text>
               <TextInput

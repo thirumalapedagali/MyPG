@@ -44,13 +44,11 @@ export default function Expenses({ addSignal }: { addSignal?: number }) {
   // Categories come from the EXPENSE_TYPE lookup (lookup_values). Until that has rows, the property's own list is used.
   const expenseTypes = useLookup(EXPENSE_TYPE);
   const DEFAULT_EXPENSE_CATEGORIES = [
-  'Rent',
-  'Food',
+  'Market',
   'Electricity',
   'Water',
-  'Maintenance',
+  'Rent',
   'Salary',
-  'Cleaning',
   'Repairs',
   'Internet',
   'Supplies',

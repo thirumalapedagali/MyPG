@@ -2314,7 +2314,7 @@ function Choice({
             addStyles.choiceSub,
             tone === 'good' && { color: '#15803d' },
             tone === 'bad' && { color: '#dc2626' },
-            on && { color: '#dbeafe' },
+            on && tone !== 'bad' && { color: '#15803d' },
           ]}
           numberOfLines={1}
         >
@@ -2359,6 +2359,9 @@ const addStyles = StyleSheet.create({
   choiceLabel: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
   choiceLabelOn: { color: '#15803d' },
   choiceSub: { fontSize: 10, fontWeight: '600', color: '#64748b', marginTop: 1 },
+
+  consentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 18, paddingVertical: 4 },
+  consentText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#334155' },
 
   roomPill: {
     flexDirection: 'row',
@@ -2417,12 +2420,15 @@ export function AddResidentModal({
   visible,
   rooms,
   initialRequest,
+  initialBed,
   onClose,
   onAdded,
 }: {
   visible: boolean;
   rooms: Room[];
   initialRequest?: BookingRequest | null;
+  /** Opens the form with this vacant bed already chosen (e.g. tapped on the Rooms screen). */
+  initialBed?: { roomId: number; sectionId: number; bedId: number } | null;
   onClose: () => void;
   onAdded: () => void;
 }) {
@@ -2450,9 +2456,10 @@ export function AddResidentModal({
   }, [rooms]);
 
   const requestedRoom = useMemo(() => {
-    if (!initialRequest?.roomId) return null;
-    return rooms.find((r) => r.id === initialRequest.roomId) || null;
-  }, [rooms, initialRequest]);
+    const roomId = initialRequest?.roomId ?? initialBed?.roomId;
+    if (!roomId) return null;
+    return rooms.find((r) => r.id === roomId) || null;
+  }, [rooms, initialRequest, initialBed]);
 
   // Default to floor of requested room or floor with vacant beds or first floor
   const initialFloor = useMemo(() => {
@@ -2504,8 +2511,9 @@ export function AddResidentModal({
   }, [currentRoom]);
 
   const [selectedSectionId, setSelectedSectionId] = useState<number | null>(() => {
-    if (initialRequest?.sectionId) {
-      const match = availableSections.find((s) => s.id === initialRequest.sectionId);
+    const wantedSectionId = initialRequest?.sectionId ?? initialBed?.sectionId;
+    if (wantedSectionId) {
+      const match = availableSections.find((s) => s.id === wantedSectionId);
       if (match) return match.id;
     }
     return availableSections[0]?.id ?? null;
@@ -2558,7 +2566,7 @@ export function AddResidentModal({
     return list;
   }, [currentRoom, currentSection]);
 
-  const [selectedBedId, setSelectedBedId] = useState<number | null>(initialRequest?.bedId ?? null);
+  const [selectedBedId, setSelectedBedId] = useState<number | null>(initialRequest?.bedId ?? initialBed?.bedId ?? null);
   const [stayType, setStayType] = useState<StayType>('MONTHLY');
   const [name, setName] = useState(initialRequest?.name ?? '');
   const [phone, setPhone] = useState(initialRequest?.mobile ?? '');
@@ -2574,11 +2582,15 @@ export function AddResidentModal({
   const [dailyRate, setDailyRate] = useState('');
   const [photo, setPhoto] = useState<PickedFile[]>([]);
   const [idCard, setIdCard] = useState<PickedFile[]>([]);
+  const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
 
   useEffect(() => {
-    if (visible) setStep(1);
+    if (visible) {
+      setStep(1);
+      setConsent(false);
+    }
   }, [visible]);
 
   // Sync pricing defaults when section or room changes (unless initialRequest had explicit values)
@@ -2603,9 +2615,13 @@ export function AddResidentModal({
             : String(Math.round((currentSection?.rentPerBed || currentRoom.rent || 6000) / 30) || 300)
         );
       }
-      setSelectedBedId(null);
+      setSelectedBedId(
+        initialBed && currentRoom?.id === initialBed.roomId && currentSection?.id === initialBed.sectionId
+          ? initialBed.bedId
+          : null
+      );
     }
-  }, [currentSection, currentRoom, initialRequest]);
+  }, [currentSection, currentRoom, initialRequest, initialBed]);
 
   const handleSelectBed = (bedItem: { bed: Bed; rent: number }) => {
     setSelectedBedId(bedItem.bed.id);
@@ -2663,6 +2679,10 @@ export function AddResidentModal({
     const cleanAadhaar = aadhaar.replace(/\s/g, '');
     if (!/^\d{12}$/.test(cleanAadhaar)) {
       Alert.alert('Aadhaar number required', 'Please enter the 12-digit Aadhaar number. Its last 4 digits are the first password.');
+      return;
+    }
+    if (!consent) {
+      Alert.alert('Consent required', 'Please confirm that the resident has agreed to share their details and ID documents.');
       return;
     }
 
@@ -2734,6 +2754,7 @@ export function AddResidentModal({
         if (problems.length) Alert.alert('Resident added', problems.join('\n\n'));
         setPhoto([]);
         setIdCard([]);
+        setConsent(false);
         if (initialRequest) {
           Alert.alert('Booking Approved', `Resident ${name.trim()} has been assigned to Room ${currentRoom.number}.`);
         }
@@ -2993,7 +3014,29 @@ export function AddResidentModal({
 
                 <Text style={addStyles.label}>Photos (optional)</Text>
                 <ImagePickerField label="Resident photo" files={photo} onChange={setPhoto} />
-                <ImagePickerField label="ID card (Aadhaar, licence, etc.)" files={idCard} onChange={setIdCard} />
+                <ImagePickerField
+                  label="ID card (Aadhaar, licence, etc.) - up to 4, e.g. front and back"
+                  files={idCard}
+                  onChange={setIdCard}
+                  max={4}
+                />
+
+                <Pressable
+                  style={addStyles.consentRow}
+                  onPress={() => setConsent((v) => !v)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: consent }}
+                >
+                  <Ionicons
+                    name={consent ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={consent ? '#16a34a' : colors.muted}
+                  />
+                  <Text style={addStyles.consentText}>
+                    I confirm the resident has agreed to share their personal details and ID documents with the property
+                    for stay and verification purposes. *
+                  </Text>
+                </Pressable>
               </>
             )}
           </ScrollView>

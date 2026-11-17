@@ -111,9 +111,9 @@ function OwnerTabs() {
       <Tab.Screen name="Today" component={Today} />
       <Tab.Screen name="Overview" component={Overview} />
       <Tab.Screen name="Rooms">
-        {({ route }) => (
+        {({ route, navigation }) => (
           <PerProperty title="Rooms">
-            <Rooms addSignal={(route.params as { add?: number } | undefined)?.add} />
+            <Rooms navigation={navigation} addSignal={(route.params as { add?: number } | undefined)?.add} />
           </PerProperty>
         )}
       </Tab.Screen>

@@ -17,7 +17,8 @@ export function PicturesSheet({ target, onClose }: { target: PictureTarget | nul
               <Text style={s.label}>Photo</Text>
               <PictureManager path={`/api/media/resident/${target.id}`} kind="PHOTO" max={1} />
               <Text style={s.label}>ID card</Text>
-              <PictureManager path={`/api/media/resident/${target.id}`} kind="ID_CARD" max={1} />
+              <Text style={s.muted}>Up to 4 files, e.g. the front and back of the Aadhaar card.</Text>
+              <PictureManager path={`/api/media/resident/${target.id}`} kind="ID_CARD" max={4} />
             </>
           ) : (
             <>

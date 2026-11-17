@@ -205,7 +205,7 @@ export function newPropertySteps(opts: {
     },
     {
       key: 'unitLabel',
-      label: 'Unit Label',
+      label: 'Unit Label(Room,Flat)',
       optional: true,
     },
     {

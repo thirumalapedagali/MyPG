@@ -1165,6 +1165,7 @@ export function AddPropertyModal({
   onCreated,
   editing = false,
   registration = false,
+  adminCreate = false,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -1172,10 +1173,13 @@ export function AddPropertyModal({
   editing?: boolean;
   /** "Register as Owner" (signed out): an extra first step takes the owner's login, and the request goes to the admin. */
   registration?: boolean;
+  /** Super admin adding a property: an extra first step takes the new owner's login, and the property is created at once. */
+  adminCreate?: boolean;
 }) {
   const registering = registration;
-  // The account step comes first when registering, so the property steps are shifted by one.
-  const offset = registering ? 1 : 0;
+  // The account step comes first when registering or when the admin creates the owner, so the property steps shift by one.
+  const withAccount = registering || adminCreate;
+  const offset = withAccount ? 1 : 0;
   const totalSteps = 4 + offset;
   const { selectPg } = useAuth();
 
@@ -1287,13 +1291,19 @@ export function AddPropertyModal({
   const current = steps[Math.max(pStep, 0)];
 
   /** Owner's own login, kept apart from the property's contact details. */
-  const accountFields: FieldDef[] = [
-    { key: 'ownerName', label: 'Your Full Name *' },
-    { key: 'mobile', label: 'Mobile Number * (your login)', keyboard: 'phone-pad' },
-    { key: 'email', label: 'Email (optional)', keyboard: 'email-address', optional: true },
-    { key: 'password', label: 'Password * (min 6 characters)', secure: true },
-    { key: 'confirm', label: 'Confirm Password *', secure: true },
-  ];
+  const accountFields: FieldDef[] = adminCreate
+    ? [
+        { key: 'ownerUsername', label: 'Owner username *' },
+        { key: 'ownerMobile', label: 'Owner mobile * (10-15 digits)', keyboard: 'phone-pad' },
+        { key: 'ownerPassword', label: 'Owner temporary password * (min 4 characters)', secure: true },
+      ]
+    : [
+        { key: 'ownerName', label: 'Your Full Name *' },
+        { key: 'mobile', label: 'Mobile Number * (your login)', keyboard: 'phone-pad' },
+        { key: 'email', label: 'Email (optional)', keyboard: 'email-address', optional: true },
+        { key: 'password', label: 'Password * (min 6 characters)', secure: true },
+        { key: 'confirm', label: 'Confirm Password *', secure: true },
+      ];
 
   const getValue = (key: string, initial = '') =>
     values[key] ?? initial;
@@ -1340,7 +1350,20 @@ export function AddPropertyModal({
       return false;
     }
 
-    if (pStep < 0) {
+    if (pStep < 0 && adminCreate) {
+      if (!/^\d{10,15}$/.test(getValue('ownerMobile').trim())) {
+        setMissing(['ownerMobile']);
+        Alert.alert('Invalid mobile', 'Enter a 10-15 digit mobile number.');
+        return false;
+      }
+      if (getValue('ownerPassword').length < 4) {
+        setMissing(['ownerPassword']);
+        Alert.alert('Too short', 'Use at least 4 characters.');
+        return false;
+      }
+    }
+
+    if (pStep < 0 && !adminCreate) {
       if (!/^\d{10,15}$/.test(getValue('mobile').trim())) {
         setMissing(['mobile']);
         Alert.alert('Invalid mobile', 'Enter a 10-15 digit mobile number.');
@@ -1356,6 +1379,11 @@ export function AddPropertyModal({
         Alert.alert('Passwords do not match', 'Enter the same password twice.');
         return false;
       }
+    }
+
+    if (pStep === 1 && !editing && !registering && pictures.length < 2) {
+      Alert.alert('Add property photos', 'Please add at least 2 photos of the property to continue.');
+      return false;
     }
 
     if (pStep === 0) {
@@ -1476,6 +1504,30 @@ export function AddPropertyModal({
     setBusy(true);
 
     try {
+      if (adminCreate) {
+        let adminCreatedId: number | null = null;
+        const made = await attempt(async () => {
+          const created = await post<{ id: number }>('/api/admin/pgs', {
+            ...newPropertyBody(values, stayTypes, amenities, place),
+            mobile: (values.contactMobile ?? '').trim() || (values.ownerMobile ?? '').trim(),
+            ownerName: (values.ownerUsername ?? '').trim(),
+            ownerUsername: (values.ownerUsername ?? '').trim(),
+            ownerMobile: (values.ownerMobile ?? '').trim(),
+            ownerPassword: values.ownerPassword,
+          });
+          adminCreatedId = created.id;
+        });
+        if (!made || adminCreatedId == null) return;
+        const problem = pictures.length ? await uploadPictures(`/api/media/property/${adminCreatedId}`, pictures) : null;
+        reset();
+        onCreated?.();
+        Alert.alert(
+          'Property Created',
+          'Property registered successfully. The owner can log in and configure units/flats/rooms.' + (problem ? `\n\n${problem}` : '')
+        );
+        return;
+      }
+
       if (registering) {
         const sent = await attempt(() =>
           post(
@@ -1883,7 +1935,7 @@ export function AddPropertyModal({
 
           <View style={{ flex: 1 }}>
             <Text style={wizardStyles.headerTitle}>
-              {registering ? 'Register as Owner' : editing ? 'Edit Property' : 'Add New Property'}
+              {registering ? 'Register as Owner' : editing ? 'Edit Property' : adminCreate ? 'New Property / Stay' : 'Add New Property'}
             </Text>
             <Text style={wizardStyles.headerSubtitle}>
               Step {step + 1} of {totalSteps}
@@ -1907,7 +1959,7 @@ export function AddPropertyModal({
           </View>
 
           <View style={wizardStyles.stepLabels}>
-            {[...(registering ? ['Account'] : []), 'Basic Info', 'Amenities', 'Policy', 'Payment'].map(
+            {[...(withAccount ? [adminCreate ? 'Owner' : 'Account'] : []), 'Basic Info', 'Amenities', 'Policy', 'Payment'].map(
               (label, index) => (
                 <Pressable
                   key={label}
@@ -1962,10 +2014,14 @@ export function AddPropertyModal({
         >
           <View style={wizardStyles.intro}>
             <Text style={wizardStyles.title}>
-              {pStep < 0 ? 'Your Account' : current.title}
+              {pStep < 0 ? (adminCreate ? 'Owner Login' : 'Your Account') : current.title}
             </Text>
             <Text style={wizardStyles.subtitle}>
-              {pStep < 0 ? 'The login you will use once your property is approved' : current.subtitle}
+              {pStep < 0
+                ? adminCreate
+                  ? 'The login the owner will use to manage this property'
+                  : 'The login you will use once your property is approved'
+                : current.subtitle}
             </Text>
           </View>
 
@@ -1974,8 +2030,9 @@ export function AddPropertyModal({
             <Card>
               {accountFields.map(renderField)}
               <Text style={wizardStyles.note}>
-                The administrator reviews every new property before it goes live. You can add pictures and rooms once it
-                is approved and you have signed in.
+                {adminCreate
+                  ? 'The owner will be asked to choose a new password at first login.'
+                  : 'The administrator reviews every new property before it goes live. You can add pictures and rooms once it is approved and you have signed in.'}
               </Text>
             </Card>
           )}
@@ -2025,11 +2082,16 @@ export function AddPropertyModal({
 
               {!editing && !registering && (
                 <ImagePickerField
-                  label="Property Pictures (up to 10)"
+                  label={`Property Pictures * (at least 2, up to 10) · ${pictures.length} added`}
                   files={pictures}
                   onChange={setPictures}
                   max={10}
                 />
+              )}
+              {registering && (
+                <Text style={wizardStyles.note}>
+                  You can add property pictures once your request is approved and you have signed in.
+                </Text>
               )}
             </>
           )}

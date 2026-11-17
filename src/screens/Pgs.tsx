@@ -2,16 +2,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { NavigationProp, ParamListBase, useNavigation } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
-import { get, PickedFile, post, put } from '../api';
+import { get, put } from '../api';
 import { useAuth } from '../auth';
 import { attempt, useResource } from '../hooks';
-import { ImagePickerField, uploadPictures } from '../images';
 import { PictureTarget, PicturesSheet } from '../pictures';
 import { GENDER_POLICY, STAY_TYPE, unitLabelFor, useLookup } from '../lookups';
-import { initialAmenities, newPropertyBody, newPropertyFields, pickedCodes, upiIsValid, useTypeAmenities } from '../propertyForm';
-import { LocationPickerField } from '../locationPicker';
-import { GeoPlace, PgInfo, PgUser, PropertyConfiguration } from '../types';
-import { Badge, Button, Card, Empty, FormModal, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
+import { initialAmenities, pickedCodes, useTypeAmenities } from '../propertyForm';
+import { PgInfo, PgUser, PropertyConfiguration } from '../types';
+import { AddPropertyModal, Badge, Button, Card, Empty, FormModal, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
 
 const PAGE = 15;
 
@@ -59,14 +57,9 @@ export default function Pgs() {
   const [search, setSearch] = useState('');
   const [shown, setShown] = useState(PAGE);
   const [usersOpen, setUsersOpen] = useState<number | null>(null);
-  const defaultType = stayTypes.find((t) => t.code === 'APARTMENT')?.code ?? stayTypes[0]?.code ?? '';
-  const [addType, setAddType] = useState<string | null>(null);
-  const [addPictures, setAddPictures] = useState<PickedFile[]>([]);
-  const [addPlace, setAddPlace] = useState<GeoPlace | null>(null);
   const [picturesOf, setPicturesOf] = useState<PictureTarget | null>(null);
   const [editType, setEditType] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ id: number; codes: string[] } | null>(null);
-  const addAmenities = useTypeAmenities(open ? addType ?? defaultType : undefined);
   const editAmenities = useTypeAmenities(editingPg ? editType ?? editingPg.stayType ?? 'PG' : undefined);
 
   // What the edited property has ticked now (empty for properties that only have the old free-text list).
@@ -187,56 +180,13 @@ export default function Pgs() {
 
       <PicturesSheet target={picturesOf} onClose={() => setPicturesOf(null)} />
 
-      <FormModal
+      <AddPropertyModal
+        adminCreate
         visible={open}
-        title="New Property / Stay"
-        fields={[
-          ...newPropertyFields({ stayTypes, genderPolicies, defaultType, amenities: addAmenities }),
-          { key: 'ownerUsername', label: 'Owner username *' },
-          { key: 'ownerMobile', label: 'Owner mobile * (10-15 digits)', keyboard: 'phone-pad' },
-          { key: 'ownerPassword', label: 'Owner temporary password * (min 4 characters)', secure: true },
-        ]}
-        extra={
-          <>
-            <LocationPickerField value={addPlace} onChange={setAddPlace} />
-            <ImagePickerField label="Property pictures (up to 10)" files={addPictures} onChange={setAddPictures} max={10} />
-          </>
-        }
-        onClose={() => {
+        onClose={() => setOpen(false)}
+        onCreated={() => {
           setOpen(false);
-          setAddType(null);
-          setAddPictures([]);
-          setAddPlace(null);
-        }}
-        onFieldChange={(k, c) => k === 'stayType' && setAddType(c)}
-        onSubmit={async (v) => {
-          if (v.ownerPassword.length < 4) {
-            Alert.alert('Too short', 'Use at least 4 characters.');
-            return false;
-          }
-          if (!upiIsValid(v.upiId)) return false;
-          const body = {
-            ...newPropertyBody(v, stayTypes, addAmenities, addPlace),
-            mobile: v.contactMobile || v.ownerMobile,
-            ownerName: v.ownerUsername,
-            ownerUsername: v.ownerUsername,
-            ownerMobile: v.ownerMobile,
-            ownerPassword: v.ownerPassword,
-          };
-          let created: { id: number } | null = null;
-          if (!(await attempt(async () => { created = await post<{ id: number }>('/api/admin/pgs', body); }))) return false;
-          const uploadProblem = created && addPictures.length
-            ? await uploadPictures(`/api/media/property/${(created as { id: number }).id}`, addPictures)
-            : null;
-          setOpen(false);
-          setAddType(null);
-          setAddPictures([]);
-          setAddPlace(null);
           reload();
-          Alert.alert(
-            'Property Created',
-            'Property registered successfully. The owner can log in and configure units/flats/rooms.' + (uploadProblem ? `\n\n${uploadProblem}` : ''),
-          );
         }}
       />
 
