@@ -78,9 +78,11 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
 
   // Meals being served now and the next ones; empty when the property has no food menu.
   const mealsRes = useResource(() => get<MealOccurrence[]>('/api/me/meals').catch(() => [] as MealOccurrence[]));
-  const nextMeals = (mealsRes.data ?? []).slice(0, 4);
+  // Meals are for PGs only (a property with no type set is a PG).
+  const nextMeals = (pg?.stayType ?? 'PG') === 'PG' ? (mealsRes.data ?? []).slice(0, 4) : [];
   const [respondingMeal, setRespondingMeal] = useState<string | null>(null);
-  const respondToMeal = async (m: MealOccurrence, attending: boolean) => {
+  // Tapping the button that is already selected clears the reply (attending = null).
+  const respondToMeal = async (m: MealOccurrence, attending: boolean | null) => {
   const key = `${m.mealId}@${m.date}`;
   setRespondingMeal(key);
 
@@ -505,32 +507,32 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
   <TouchableOpacity
     style={[
       rdStyles.mealCircleButton,
-      { backgroundColor: m.attending ? '#2563EB' : '#EFF6FF' },
+      { backgroundColor: m.answer === 'YES' ? '#2563EB' : '#EFF6FF' },
     ]}
-    onPress={() => respondToMeal(m, true)}
+    onPress={() => respondToMeal(m, m.answer === 'YES' ? null : true)}
     disabled={respondingMeal === key}
     accessibilityLabel="Attend meal"
   >
     <Ionicons
       name="checkmark"
       size={20}
-      color={m.attending ? '#FFFFFF' : '#2563EB'}
+      color={m.answer === 'YES' ? '#FFFFFF' : '#2563EB'}
     />
   </TouchableOpacity>
 
   <TouchableOpacity
     style={[
       rdStyles.mealCircleButton,
-      { backgroundColor: m.attending === false ? '#DC2626' : '#FEF2F2' },
+      { backgroundColor: m.answer === 'NO' ? '#DC2626' : '#FEF2F2' },
     ]}
-    onPress={() => respondToMeal(m, false)}
+    onPress={() => respondToMeal(m, m.answer === 'NO' ? null : false)}
     disabled={respondingMeal === key}
     accessibilityLabel="Not attending meal"
   >
     <Ionicons
       name="close"
       size={20}
-      color={m.attending === false ? '#FFFFFF' : '#DC2626'}
+      color={m.answer === 'NO' ? '#FFFFFF' : '#DC2626'}
     />
   </TouchableOpacity>
 </View>
@@ -539,7 +541,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
             );
           })}
           <Text style={[s.muted, { fontSize: 11, marginTop: 8 }]}>
-            Tap Attend so the kitchen knows how many to cook for.
+            Tap the tick if you will eat, or the cross if you will not, so the kitchen knows how many to cook for.
           </Text>
         </Card>
       )}
@@ -571,7 +573,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
       <Modal visible={activeModal === 'COMPLAINTS'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <View style={s.overlay}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setActiveModal(null)} />
-          <View style={s.sheet}>
+          <View style={[s.sheet, { maxHeight: '85%' }]}>
             <View style={s.handle} />
             <View style={s.sheetHeader}>
               <View>
@@ -637,7 +639,7 @@ export default function ResidentDashboard({ navigation }: { navigation?: any }) 
       {/* 🛠️ RAISE COMPLAINT MODAL */}
       <Modal visible={activeModal === 'NEW_COMPLAINT'} transparent animationType="slide" onRequestClose={() => setActiveModal('COMPLAINTS')}>
         <View style={s.overlay}>
-          <View style={s.sheet}>
+          <View style={[s.sheet, { maxHeight: '85%' }]}>
             <View style={s.handle} />
             <View style={s.sheetHeader}>
               <View>

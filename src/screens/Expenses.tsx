@@ -43,7 +43,33 @@ export default function Expenses({ addSignal }: { addSignal?: number }) {
 
   // Categories come from the EXPENSE_TYPE lookup (lookup_values). Until that has rows, the property's own list is used.
   const expenseTypes = useLookup(EXPENSE_TYPE);
-  const names = [...new Set((expenseTypes.length ? expenseTypes.map((t) => t.label) : (data?.cats ?? []).map((c) => c.name)))];
+  const DEFAULT_EXPENSE_CATEGORIES = [
+  'Rent',
+  'Food',
+  'Electricity',
+  'Water',
+  'Maintenance',
+  'Salary',
+  'Cleaning',
+  'Repairs',
+  'Internet',
+  'Supplies',
+  'Marketing',
+  'Transport',
+  'Other',
+];
+
+const names = [
+  ...new Set(
+    expenseTypes.length
+      ? expenseTypes.map((t) => t.label)
+      : data?.cats?.length
+        ? data.cats.map((c) => c.name)
+        : DEFAULT_EXPENSE_CATEGORIES
+  ),
+];
+console.log("names",names)
+  //const names = [...new Set((expenseTypes.length ? expenseTypes.map((t) => t.label) : (data?.cats ?? []).map((c) => c.name)))];
   const categories = [ALL, ...names];
   const list = data?.list.content ?? [];
   const listTotal = list.reduce((n, e) => n + e.amount, 0);
@@ -139,12 +165,39 @@ export function AddExpenseModal({
   onCreated: () => void;
   presetCategories?: string[];
 }) {
-  const { data } = useResource(async () => {
-    if (presetCategories && presetCategories.length > 0) return presetCategories;
+ const DEFAULT_EXPENSE_CATEGORIES = [
+  'Rent',
+  'Food',
+  'Electricity',
+  'Water',
+  'Maintenance',
+  'Salary',
+  'Cleaning',
+  'Repairs',
+  'Internet',
+  'Supplies',
+  'Marketing',
+  'Transport',
+  'Other',
+];
+
+const { data } = useResource(async () => {
+  if (presetCategories?.length) {
+    return presetCategories;
+  }
+
+  try {
     const cats = await get<ExpenseCategory[]>('/api/master/expenses');
-    return cats.map((c) => c.name);
-  });
-  const names = data ?? presetCategories ?? [];
+
+    return cats?.length
+      ? cats.map((c) => c.name)
+      : DEFAULT_EXPENSE_CATEGORIES;
+  } catch {
+    return DEFAULT_EXPENSE_CATEGORIES;
+  }
+});
+
+const names = data ?? presetCategories ?? DEFAULT_EXPENSE_CATEGORIES;
   const options = names.map((n) => ({ code: n, label: n }));
 
   return (

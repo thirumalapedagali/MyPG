@@ -23,6 +23,7 @@ import {
   View,
   KeyboardTypeOptions,
   ViewStyle,
+  StyleProp,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { get, PickedFile, post, put } from './api';
@@ -562,7 +563,7 @@ export function HeaderAction({ label, icon, onPress }: { label: string; icon: Ic
   );
 }
 
-export function Card({ children, style }: { children: React.ReactNode; style?: ViewStyle }) {
+export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   return <View style={[s.card, style]}>{children}</View>;
 }
 
@@ -775,10 +776,8 @@ export function Sheet({
       statusBarTranslucent
       onRequestClose={onClose}
     >
-      <KeyboardAvoidingView
-        style={s.overlay}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      {/* A Modal is a separate window, so Android's "resize" does not apply: pad above the keyboard on both platforms. */}
+      <KeyboardAvoidingView style={s.overlay} behavior="padding">
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={onClose}
@@ -788,6 +787,7 @@ export function Sheet({
           style={[
             s.sheet,
             {
+              flexShrink: 1,
               // Grows with its content and only stops at the screen edge, where the content scrolls.
               maxHeight: Math.min(
                 height - insets.top - insets.bottom - 40,

@@ -278,8 +278,6 @@ export default function Account() {
   if (canManageStaff)
     tiles.push({ icon: 'people', color: '#1565c0', title: 'Manage Users', sub: 'Add, edit & assign roles', onPress: () => nav.navigate('Users') });
   if (canManagePg)
-    tiles.push({ icon: 'restaurant', color: '#ea580c', title: 'Food Menu', sub: 'Weekly meals & who is eating', onPress: () => nav.navigate('FoodMenu') });
-  if (canManagePg)
     tiles.push({ icon: 'logo-whatsapp', color: '#25a244', title: 'WhatsApp Notifications', sub: 'Send updates & reminders', onPress: () => setWhatsappOpen(true) });
   if (user.role === 'SUPER_ADMIN')
     tiles.push({ icon: 'home', color: '#6a1b9a', title: 'Admin Console', sub: 'Add, edit & manage properties', onPress: () => attempt(() => exitPg()) });

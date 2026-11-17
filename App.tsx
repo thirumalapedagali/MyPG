@@ -20,6 +20,9 @@ import PendingDues from './src/screens/PendingDues';
 import Announcements from './src/screens/Announcements';
 import SupportContacts from './src/screens/SupportContacts';
 import Complaints from './src/screens/Complaints';
+import FoodMenu from './src/screens/FoodMenu';
+import Feedback from './src/screens/Feedback';
+import AdminFeedback from './src/screens/AdminFeedback';
 import CheckinRequests from './src/screens/CheckinRequests';
 import VacateRequests from './src/screens/VacateRequests';
 import Expenses from './src/screens/Expenses';
@@ -38,9 +41,6 @@ import PropertyTypes from './src/screens/PropertyTypes';
 import ExploreScreen from './src/screens/ExploreScreen';
 import ResidentDashboard from './src/screens/ResidentDashboard';
 import Notifications from './src/screens/Notifications';
-import Feedback from './src/screens/Feedback';
-import FoodMenu from './src/screens/FoodMenu';
-import AdminFeedback from './src/screens/AdminFeedback';
 import { initNotificationListeners } from './src/notificationStore';
 
 // Keep the native splash up until the animated intro is mounted and takes over.
@@ -131,6 +131,7 @@ function OwnerTabs() {
           </PerProperty>
         )}
       </Tab.Screen>
+      
       <Tab.Screen name="Account" component={Account} />
     </Tab.Navigator>
   );
@@ -195,11 +196,11 @@ function Root() {
           <Stack.Screen name="Main" component={Main} />
           {user.role !== 'RESIDENT' && <Stack.Screen name="PendingDues" component={PendingDues} />}
           <Stack.Screen name="Announcements" component={Announcements} />
-          <Stack.Screen name="Feedback" component={Feedback} />
-          <Stack.Screen name="FoodMenu" component={FoodMenu} />
           {user.role !== 'RESIDENT' && <Stack.Screen name="SupportContacts" component={SupportContacts} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="PropertySetup" component={PropertySetup} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Complaints" component={Complaints} />}
+          <Stack.Screen name="FoodMenu" component={FoodMenu} />
+          <Stack.Screen name="Feedback" component={Feedback} />
           {user.role !== 'RESIDENT' && <Stack.Screen name="CheckinRequests" component={CheckinRequests} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="VacateRequests" component={VacateRequests} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Users" component={Users} />}

@@ -145,37 +145,6 @@ export default function Rooms({ editable = true, addSignal }: { editable?: boole
     Alert.alert('Updated', 'New residents pay this rent and deposit now. Current residents move to the new rent from their next billing cycle.');
   };
 
-  const editFields = editRoom
-    ? [
-        { key: 'number', label: editRoom.roomType?.startsWith('FLAT_') ? 'Flat number' : 'Room number', initial: editRoom.number },
-        { key: 'roomName', label: 'Name (optional)', initial: editRoom.roomName ?? '', optional: true },
-        { key: 'buildingName', label: 'Building (optional)', initial: editRoom.buildingName ?? '', optional: true },
-        { key: 'floorName', label: 'Floor', initial: editRoom.floorName?.trim() || 'Ground Floor', options: floorTabs.filter((f) => f !== ALL_FLOORS).map((f) => ({ code: f, label: f })) },
-        { key: 'roomType', label: 'Type', initial: editRoom.roomType ?? 'STANDARD', options: ROOM_TYPES.map((t) => ({ code: t.key, label: t.label })) },
-        { key: 'attachedBathroom', label: 'Attached bathroom', initial: editRoom.attachedBathroom ? 'YES' : 'NO', options: [{ code: 'YES', label: 'Yes' }, { code: 'NO', label: 'No' }] },
-        { key: 'balcony', label: 'Balcony', initial: editRoom.balcony ? 'YES' : 'NO', options: [{ code: 'YES', label: 'Yes' }, { code: 'NO', label: 'No' }] },
-      ]
-    : [];
-
-  /** Sends the edited details. Beds, sections and rent are left as they are (rent has its own "Edit rent"). */
-  const saveEdit = async (v: Record<string, string>) => {
-    if (!editRoom) return false;
-    const ok = await attempt(() =>
-      put(`/api/rooms/${editRoom.id}`, {
-        number: v.number,
-        roomName: v.roomName,
-        buildingName: v.buildingName,
-        floorName: v.floorName,
-        roomType: v.roomType,
-        attachedBathroom: v.attachedBathroom === 'YES',
-        balcony: v.balcony === 'YES',
-      })
-    );
-    if (!ok) return false;
-    setEditRoom(null);
-    reload();
-  };
-
   const confirmDelete = (room: Room) =>
     Alert.alert('Delete room', `Delete room ${room.number}?${room.occupied ? ' Remove its residents first.' : ''}`, [
       { text: 'Cancel', style: 'cancel' },
@@ -401,12 +370,15 @@ export default function Rooms({ editable = true, addSignal }: { editable?: boole
 
       <PicturesSheet target={picturesOf} onClose={() => setPicturesOf(null)} />
 
-      <FormModal
+      {/* Edit opens the same form as Add, filled with this room's details. */}
+      <AddRoomModal
         visible={!!editRoom}
-        title={editRoom ? 'Edit ' + (editRoom.roomType?.startsWith('FLAT_') ? 'flat' : 'room') + ' ' + editRoom.number : 'Edit'}
-        fields={editFields}
+        room={editRoom}
         onClose={() => setEditRoom(null)}
-        onSubmit={saveEdit}
+        onCreated={() => {
+          setEditRoom(null);
+          reload();
+        }}
       />
 
       <FormModal
@@ -470,12 +442,15 @@ type SectionForm = {
   facilities: string[];
 };
 
+/** The add-room wizard; pass `room` to edit that room with the same form. */
 export function AddRoomModal({
   visible,
+  room,
   onClose,
   onCreated,
 }: {
   visible: boolean;
+  room?: Room | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -483,7 +458,12 @@ export function AddRoomModal({
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
   // Step 1: Room Details
-  const floorOptions = useMemo(() => buildFloorNames(user?.totalFloors), [user?.totalFloors]);
+  const floorOptions = useMemo(() => {
+    const names = buildFloorNames(user?.totalFloors);
+    const own = room?.floorName?.trim();
+    if (own && !names.includes(own)) names.push(own);
+    return names;
+  }, [user?.totalFloors, room?.floorName]);
 
   const [floorDropdownOpen, setFloorDropdownOpen] = useState(false);
   const [buildingName, setBuildingName] = useState('Building A');
@@ -514,6 +494,38 @@ export function AddRoomModal({
   const [directDeposit, setDirectDeposit] = useState<string>('5000');
 
   const [busy, setBusy] = useState(false);
+
+  // Editing: fill the form from the room. Beds and sections stay as they are; rent and deposit can change.
+  useEffect(() => {
+    if (!visible || !room) return;
+    setStep(1);
+    setBuildingName(room.buildingName ?? '');
+    setFloorName(room.floorName?.trim() || 'Ground Floor');
+    setNumber(room.number);
+    setFlatType(room.roomType?.startsWith('FLAT_') ? room.roomType : 'FLAT_2BHK');
+    setRoomTypeKind(room.capacity === 1 ? 'PRIVATE' : 'SHARING');
+    setFacilities([room.acType === 'AC' ? 'AC' : '', room.attachedBathroom ? 'Attached Bathroom' : '', room.balcony ? 'Balcony' : ''].filter(Boolean));
+    const secs = room.sections ?? [];
+    if (secs.length > 1) {
+      setSections(
+        secs.map((sec) => ({
+          id: String(sec.id),
+          sectionName: sec.sectionName,
+          sharingType: sec.sharingType,
+          capacity: sec.capacity,
+          rentPerBed: String(sec.rentPerBed),
+          depositPerBed: String(sec.depositPerBed ?? 0),
+          facilities: [sec.acType === 'AC' ? 'AC' : '', sec.attachedBathroom ? 'Attached Bath' : ''].filter(Boolean),
+        })),
+      );
+    } else {
+      setSections([]);
+      setDirectCapacity(room.capacity);
+      setDirectSharingType(secs[0]?.sharingType ?? 'PRIVATE');
+      setDirectRent(String(room.rent));
+      setDirectDeposit(String(secs[0]?.depositPerBed ?? room.sharingOptions?.[0]?.depositPerBed ?? 0));
+    }
+  }, [visible, room?.id]);
 
   const resetForm = () => {
     setStep(1);
@@ -663,6 +675,48 @@ export function AddRoomModal({
 
     setBusy(true);
     try {
+      if (room) {
+        // Details go to the room; a changed rent or deposit goes to the rent endpoint, which looks after current residents.
+        const original = room.sections ?? [];
+        const rentBody = hasSections
+          ? {
+              sections: sections.map((sec) => ({
+                sectionId: Number(sec.id),
+                rentPerBed: parseFloat(sec.rentPerBed) || 0,
+                depositPerBed: parseFloat(sec.depositPerBed) || 0,
+              })),
+            }
+          : { rent: parseFloat(directRent) || 0, deposit: parseFloat(directDeposit) || 0 };
+        const rentChanged = hasSections
+          ? sections.some((sec) => {
+              const o = original.find((x) => String(x.id) === sec.id);
+              return !o || (parseFloat(sec.rentPerBed) || 0) !== o.rentPerBed || (parseFloat(sec.depositPerBed) || 0) !== (o.depositPerBed ?? 0);
+            })
+          : (parseFloat(directRent) || 0) !== room.rent ||
+            (parseFloat(directDeposit) || 0) !== (original[0]?.depositPerBed ?? room.sharingOptions?.[0]?.depositPerBed ?? 0);
+
+        const saved = await attempt(async () => {
+          await put(`/api/rooms/${room.id}`, {
+            number: num,
+            buildingName: buildingName.trim(),
+            floorName: floorName.trim(),
+            roomType: isApartment ? flatType : room.roomType,
+            acType: facilities.includes('AC') ? 'AC' : 'NON_AC',
+            attachedBathroom: facilities.includes('Attached Bathroom'),
+            balcony: facilities.includes('Balcony'),
+          });
+          if (rentChanged) await put(`/api/rooms/${room.id}/rent`, rentBody);
+        });
+        if (saved) {
+          resetForm();
+          onCreated();
+          if (rentChanged) {
+            Alert.alert('Updated', 'New residents pay this rent and deposit now. Current residents move to the new rent from their next billing cycle.');
+          }
+        }
+        return;
+      }
+
       let payloadSections: any[] | null = null;
       let payloadSharingOptions: any[] = [];
 
@@ -759,7 +813,7 @@ export function AddRoomModal({
           >
             <Ionicons name="arrow-back" size={24} color="#0f172a" />
           </Pressable>
-          <Text style={wizardStyles.headerTitle}>{isApartment ? 'Add New Flat' : 'Add New Room'}</Text>
+          <Text style={wizardStyles.headerTitle}>{`${room ? 'Edit' : 'Add New'} ${isApartment ? 'Flat' : 'Room'}`}</Text>
           <View style={{ width: 24 }} />
         </View>
 
@@ -1056,11 +1110,13 @@ export function AddRoomModal({
                 </View>
               </View>
 
-              {/* Room Photos (Optional) */}
-              <View>
-                <Text style={wizardStyles.sectionTitle}>Room Photos (Optional)</Text>
-                <ImagePickerField label="Up to 10 pictures" files={photos} onChange={setPhotos} max={10} />
-              </View>
+              {/* Room Photos (Optional): an existing room's pictures are managed with its Pictures button */}
+              {!room && (
+                <View>
+                  <Text style={wizardStyles.sectionTitle}>Room Photos (Optional)</Text>
+                  <ImagePickerField label="Up to 10 pictures" files={photos} onChange={setPhotos} max={10} />
+                </View>
+              )}
             </View>
           )}
 
@@ -1116,7 +1172,7 @@ export function AddRoomModal({
                       : 'Configure sharing and pricing for each section or partitioned space.'}
                   </Text>
                 </View>
-                {sections.length > 0 && (
+                {!room && sections.length > 0 && (
                   <TouchableOpacity
                     onPress={handleRemoveAllSections}
                     style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#fef2f2' }}
@@ -1125,6 +1181,12 @@ export function AddRoomModal({
                   </TouchableOpacity>
                 )}
               </View>
+
+              {room && (
+                <Text style={wizardStyles.sectionSubtitle}>
+                  Beds, sharing type and sections can't be changed after the room is created. You can update the rent and deposit.
+                </Text>
+              )}
 
               {/* IF NO SECTIONS: DIRECT ROOM ALLOCATION */}
               {sections.length === 0 && (
@@ -1137,7 +1199,8 @@ export function AddRoomModal({
                     </View>
                   </View>
 
-                  {/* Sharing Type */}
+                  {/* Sharing type and beds: fixed once the room exists */}
+                  <View pointerEvents={room ? 'none' : 'auto'} style={room ? { opacity: 0.55 } : undefined}>
                   <Text style={wizardStyles.fieldLabel}>Room Sharing Model *</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
                     {SHARING_TYPE_CHOICES.map((choice) => (
@@ -1186,6 +1249,7 @@ export function AddRoomModal({
                       <Ionicons name="add" size={18} color="#0f172a" />
                     </Pressable>
                   </View>
+                  </View>
 
                   {/* Monthly Rent */}
                   <Text style={[wizardStyles.fieldLabel, { marginTop: 12 }]}>Monthly Rent (per bed / flat) *</Text>
@@ -1223,16 +1287,20 @@ export function AddRoomModal({
                   {/* Section Card Header */}
                   <View style={wizardStyles.sectionCardHeader}>
                     <Text style={wizardStyles.sectionCardTitle}>Section {idx + 1}</Text>
-                    <Pressable
-                      onPress={() => handleRemoveSection(idx)}
-                      style={wizardStyles.removeSectionBtn}
-                      hitSlop={8}
-                    >
-                      <Ionicons name="trash-outline" size={16} color="#ef4444" />
-                      <Text style={wizardStyles.removeSectionText}>Remove Section</Text>
-                    </Pressable>
+                    {!room && (
+                      <Pressable
+                        onPress={() => handleRemoveSection(idx)}
+                        style={wizardStyles.removeSectionBtn}
+                        hitSlop={8}
+                      >
+                        <Ionicons name="trash-outline" size={16} color="#ef4444" />
+                        <Text style={wizardStyles.removeSectionText}>Remove Section</Text>
+                      </Pressable>
+                    )}
                   </View>
 
+                  {/* Section Name, sharing type and beds: fixed once the room exists */}
+                  <View pointerEvents={room ? 'none' : 'auto'} style={room ? { opacity: 0.55 } : undefined}>
                   {/* Section Name */}
                   <Text style={wizardStyles.fieldLabel}>Section Name *</Text>
                   <TextInput
@@ -1292,6 +1360,7 @@ export function AddRoomModal({
                       <Ionicons name="add" size={18} color="#0f172a" />
                     </Pressable>
                   </View>
+                  </View>
 
                   {/* Monthly Rent */}
                   <Text style={[wizardStyles.fieldLabel, { marginTop: 12 }]}>Monthly Rent (per bed) *</Text>
@@ -1322,6 +1391,8 @@ export function AddRoomModal({
                   </View>
 
                   {/* Facilities (Optional) */}
+                  {!room && (
+                  <>
                   <Text style={[wizardStyles.fieldLabel, { marginTop: 12 }]}>Facilities (Optional)</Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                     {SECTION_FACILITY_OPTIONS.map((fItem) => {
@@ -1352,14 +1423,18 @@ export function AddRoomModal({
                       );
                     })}
                   </View>
+                  </>
+                  )}
                 </View>
               ))}
 
               {/* Add Another Section Button */}
-              <Pressable style={wizardStyles.addSectionBtn} onPress={handleAddSection}>
-                <Ionicons name="add" size={20} color="#15803d" />
-                <Text style={wizardStyles.addSectionText}>Add Another Section</Text>
-              </Pressable>
+              {!room && (
+                <Pressable style={wizardStyles.addSectionBtn} onPress={handleAddSection}>
+                  <Ionicons name="add" size={20} color="#15803d" />
+                  <Text style={wizardStyles.addSectionText}>Add Another Section</Text>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -1595,7 +1670,7 @@ export function AddRoomModal({
                 disabled={busy}
               >
                 <Ionicons name="save-outline" size={18} color="#ffffff" style={{ marginRight: 6 }} />
-                <Text style={wizardStyles.primaryBtnText}>{busy ? 'Saving...' : 'Save Room'}</Text>
+                <Text style={wizardStyles.primaryBtnText}>{busy ? 'Saving...' : room ? 'Save Changes' : 'Save Room'}</Text>
               </Pressable>
             </View>
           )}

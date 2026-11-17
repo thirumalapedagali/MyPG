@@ -41,10 +41,13 @@ export default function FoodMenu() {
 
   const menu = useResource(() => get<MenuMeal[]>('/api/menu'));
   const counts = useResource(
-    async () => (canEdit && countDate ? get<{ mealId: number; count: number }[]>(`/api/menu/attendance?date=${countDate}`) : []),
+    async () =>
+      canEdit && countDate
+        ? get<{ mealId: number; attending: number; notAttending: number }[]>(`/api/menu/attendance?date=${countDate}`)
+        : [],
     [canEdit, countDate],
   );
-  const attending = new Map((counts.data ?? []).map((c) => [c.mealId, c.count]));
+  const headcount = new Map((counts.data ?? []).map((c) => [c.mealId, c]));
   const meals = (menu.data ?? []).filter((m) => m.dayOfWeek === day);
 
   const reload = () => {
@@ -99,7 +102,12 @@ export default function FoodMenu() {
         <Card key={m.id} style={{ marginBottom: 8 }}>
           <View style={s.row}>
             <Text style={[s.h2, { fontSize: 16 }]}>{m.name}</Text>
-            {canEdit && countDate && <Badge text={`${attending.get(m.id) ?? 0} attending`} color={colors.good} />}
+            {canEdit && countDate && (
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <Badge text={`${headcount.get(m.id)?.attending ?? 0} attending`} color={colors.good} />
+                <Badge text={`${headcount.get(m.id)?.notAttending ?? 0} not`} color={colors.bad} />
+              </View>
+            )}
           </View>
           <View style={styles.time}>
             <Ionicons name="time-outline" size={14} color={colors.muted} />
@@ -168,37 +176,32 @@ function DayPlanner({
   onSaved: () => void;
 }) {
   const [rows, setRows] = useState<Row[]>(() => rowsFor(existing, day));
-  const [days, setDays] = useState<number[]>([day]);
+  const [planDay, setPlanDay] = useState(day);
   const [saving, setSaving] = useState(false);
 
   const setRow = (i: number, patch: Partial<Row>) => setRows((r) => r.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-  const toggleDay = (d: number) =>
-    setDays((cur) => {
-      const next = cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d];
-      // Picking another single day shows that day's saved meals; several days keep what is typed.
-      if (next.length === 1 && next[0] !== cur[0]) setRows(rowsFor(existing, next[0]));
-      return next;
-    });
+  // Each day has its own menu, so picking a day shows that day's saved meals.
+  const pickDay = (d: number) => {
+    if (d === planDay) return;
+    setPlanDay(d);
+    setRows(rowsFor(existing, d));
+  };
 
   const save = async () => {
-    if (days.length === 0) {
-      Alert.alert('Choose a day', 'Pick at least one day to save this menu on.');
-      return;
-    }
     const served = rows.filter((r) => r.items.trim());
     const bad = served.find((r) => r.endTime <= r.startTime);
     if (bad) {
       Alert.alert('Check the times', `${bad.name} must end after it starts.`);
       return;
     }
-    if (served.length === 0 && !existing.some((m) => days.includes(m.dayOfWeek))) {
+    if (served.length === 0 && !existing.some((m) => m.dayOfWeek === planDay)) {
       Alert.alert('Nothing to save', 'Add the food items for at least one meal.');
       return;
     }
     setSaving(true);
     const ok = await attempt(() =>
       put('/api/menu/day', {
-        days,
+        days: [planDay],
         meals: rows.map((r) => ({ name: r.name, startTime: r.startTime, endTime: r.endTime, items: r.items.trim() })),
       }),
     );
@@ -212,16 +215,16 @@ function DayPlanner({
         <Text style={styles.label}>Save for</Text>
         <View style={styles.dayRow}>
           {DAYS.map((d, i) => {
-            const on = days.includes(i + 1);
+            const on = planDay === i + 1;
             return (
-              <TouchableOpacity key={d} style={[styles.dayChip, on && styles.dayChipOn]} onPress={() => toggleDay(i + 1)} activeOpacity={0.7}>
+              <TouchableOpacity key={d} style={[styles.dayChip, on && styles.dayChipOn]} onPress={() => pickDay(i + 1)} activeOpacity={0.7}>
                 <Text style={[styles.dayChipText, on && { color: '#fff' }]}>{d}</Text>
               </TouchableOpacity>
             );
           })}
         </View>
         <Text style={[s.muted, { fontSize: 11, marginBottom: 6 }]}>
-          Pick several days to give them the same menu. Leave a meal&apos;s food empty if it is not served.
+          Each day has its own menu. Leave a meal&apos;s food empty if it is not served.
         </Text>
 
         {rows.map((r, i) => (

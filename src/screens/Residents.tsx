@@ -2283,6 +2283,136 @@ const isVacantBed = (bed: Bed): boolean => {
   return ['VACANT', 'AVAILABLE', 'FREE', 'UNOCCUPIED', 'EMPTY'].includes(status);
 };
 
+function Choice({
+  label,
+  sub,
+  on,
+  disabled,
+  tone = 'neutral',
+  onPress,
+}: {
+  label: string;
+  sub?: string;
+  on: boolean;
+  disabled?: boolean;
+  tone?: 'good' | 'bad' | 'neutral';
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[addStyles.choice, on && addStyles.choiceOn, disabled && addStyles.choiceOff]}
+      onPress={onPress}
+      disabled={disabled}
+      activeOpacity={0.8}
+      accessibilityRole="button"
+      accessibilityState={{ selected: on, disabled: !!disabled }}
+    >
+      <Text style={[addStyles.choiceLabel, on && addStyles.choiceLabelOn]} numberOfLines={1}>{label}</Text>
+      {sub ? (
+        <Text
+          style={[
+            addStyles.choiceSub,
+            tone === 'good' && { color: '#15803d' },
+            tone === 'bad' && { color: '#dc2626' },
+            on && { color: '#dbeafe' },
+          ]}
+          numberOfLines={1}
+        >
+          {sub}
+        </Text>
+      ) : null}
+    </TouchableOpacity>
+  );
+}
+
+const addStyles = StyleSheet.create({
+  sheet: { maxHeight: '92%', minHeight: 0, paddingHorizontal: 0, paddingBottom: 0 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 2, paddingBottom: 8 },
+  progress: { flexDirection: 'row', gap: 6, paddingHorizontal: 16, paddingBottom: 4 },
+  progressSeg: { flex: 1, height: 4, borderRadius: 2, backgroundColor: '#e2e8f0' },
+  progressOn: { backgroundColor: '#1b873f' },
+  body: { flexGrow: 0 },
+  bodyContent: { paddingHorizontal: 16, paddingBottom: 12 },
+
+  label: { fontSize: 12, fontWeight: '700', color: '#334155', marginTop: 12, marginBottom: 6 },
+  hint: { fontSize: 11, color: colors.muted, marginTop: 6 },
+  warn: { fontSize: 12, fontWeight: '600', color: '#dc2626' },
+  row: { flexDirection: 'row', gap: 8, paddingRight: 8 },
+  wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  twoCol: { flexDirection: 'row', gap: 10 },
+
+  // selectable options: same look as the filter pills on the list (soft green when selected)
+  choice: {
+    minWidth: 64,
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  choiceOn: { backgroundColor: '#dcfce7', borderColor: '#16a34a' },
+  choiceOff: { opacity: 0.45 },
+  choiceLabel: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
+  choiceLabelOn: { color: '#15803d' },
+  choiceSub: { fontSize: 10, fontWeight: '600', color: '#64748b', marginTop: 1 },
+
+  roomPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+  },
+  roomPillText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#15803d' },
+  roomPillLink: { fontSize: 12, fontWeight: '700', color: '#1b873f' },
+
+  // same segmented control as the resident detail tabs: white track, solid green when active
+  seg: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  segBtn: { flex: 1, minHeight: 40, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  segBtnOn: { backgroundColor: '#1b873f' },
+  segText: { fontSize: 13, fontWeight: '600', color: '#64748b' },
+  segTextOn: { color: '#ffffff', fontWeight: '700' },
+
+  note: { fontSize: 11, color: colors.muted, marginTop: 4 },
+
+  footer: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+    gap: 8,
+  },
+  summary: { fontSize: 12, color: '#475569', fontWeight: '600' },
+  footerRow: { flexDirection: 'row', gap: 10 },
+  backBtn: {
+    flex: 0.8,
+    height: 46,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 5,
+  },
+  primary: { marginTop: 0 },
+});
+
 export function AddResidentModal({
   visible,
   rooms,
@@ -2296,6 +2426,8 @@ export function AddResidentModal({
   onClose: () => void;
   onAdded: () => void;
 }) {
+    const insets = useSafeAreaInsets();   // ← add this line
+
   // 1. Build floor list with statistics
   const floorOptions = useMemo(() => {
     const map = new Map<string, { totalRooms: number; vacantBeds: number }>();
@@ -2612,577 +2744,310 @@ export function AddResidentModal({
     }
   };
 
+  const stepTitle = step === 1 ? 'Select room' : 'Resident details';
+  const bedLabel = selectedBedId
+    ? vacantBeds.find((b) => b.bed.id === selectedBedId)?.bed.bedNumber
+    : 'Auto bed';
+  const summaryText = currentRoom
+    ? `Room ${currentRoom.number} · ${currentSection?.sectionName || 'Main Room'} · ${bedLabel}`
+    : 'Pick a floor and room';
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={s.overlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={[s.sheet, { height: step === 1 ? '68%' : '88%', maxHeight: step === 1 ? '68%' : '88%', minHeight: 0, flexShrink: 1 }]}>
+        <View style={[s.sheet, addStyles.sheet]}>
           <View style={s.handle} />
-          <View style={s.sheetHeader}>
-            <View>
-              <Text style={s.sheetTitle}>{initialRequest ? 'Approve & Assign Bed' : 'Add Resident'}</Text>
-              <Text style={s.muted}>
-                {initialRequest ? `Allocate room & bed for ${initialRequest.name}` : 'Select Floor, Room & Section Allocation'}
+
+          <View style={addStyles.header}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.sheetTitle}>{initialRequest ? 'Approve & assign bed' : 'Add resident'}</Text>
+              <Text style={s.muted} numberOfLines={1}>
+                {initialRequest ? `For ${initialRequest.name} · ` : ''}Step {step} of 2 · {stepTitle}
               </Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10}>
+            <Pressable onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={colors.muted} />
             </Pressable>
           </View>
-
-          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 10 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: step === 1 ? '#2563eb' : '#16a34a', alignItems: 'center', justifyContent: 'center' }}>
-                {step === 1 ? <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>1</Text> : <Ionicons name="checkmark" size={15} color="#fff" />}
-              </View>
-              <Text style={{ fontSize: 12, fontWeight: '700', color: step === 1 ? '#2563eb' : '#16a34a' }}>Select Room</Text>
-            </View>
-            <View style={{ flex: 1, height: 2, backgroundColor: step === 2 ? '#2563eb' : '#e2e8f0' }} />
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: step === 2 ? '#2563eb' : '#e2e8f0', alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: step === 2 ? '#fff' : '#64748b', fontWeight: '700', fontSize: 12 }}>2</Text>
-              </View>
-              <Text style={{ fontSize: 12, fontWeight: '700', color: step === 2 ? '#2563eb' : '#94a3b8' }}>Resident Details</Text>
-            </View>
+          <View style={addStyles.progress}>
+            <View style={[addStyles.progressSeg, addStyles.progressOn]} />
+            <View style={[addStyles.progressSeg, step === 2 && addStyles.progressOn]} />
           </View>
 
           <ScrollView
-            style={{ flex: 1, minHeight: 0 }}
-            contentContainerStyle={[s.sheetBody, { paddingBottom: 24 }]} 
+            style={addStyles.body}
+            contentContainerStyle={addStyles.bodyContent}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-            showsVerticalScrollIndicator
+            showsVerticalScrollIndicator={false}
           >
             {step === 1 && (
               <>
-            {/* ── 1. FLOOR SELECTION DROPDOWN ── */}
-            <Text style={[s.label, compactLabel, { marginTop: 0 }]}>1. Select Floor *</Text>
-            <View style={allocStyles.card}>
-              <TouchableOpacity
-                style={allocStyles.selectorHeader}
-                onPress={() => setOpenDropdown(openDropdown === 'floor' ? null : 'floor')}
-                activeOpacity={0.7}
-              >
-                <View style={allocStyles.selectorIconWrap}>
-                  <Ionicons name="layers-outline" size={18} color="#15803d" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={allocStyles.selectorTitle}>{selectedFloor}</Text>
-                  <Text style={allocStyles.selectorSub}>
-                    {roomsOnFloor.length} rooms on this floor
-                  </Text>
-                </View>
-                <Ionicons
-                  name={openDropdown === 'floor' ? 'chevron-up' : 'chevron-down'}
-                  size={18}
-                  color="#64748b"
-                />
-              </TouchableOpacity>
-
-              {openDropdown === 'floor' && (
-                <ScrollView
-                  style={allocStyles.optionsList}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator
-                >
-                  {floorOptions.map((f) => {
-                    const isSelected = f.floorName === selectedFloor;
-                    return (
-                      <TouchableOpacity
-                        key={f.floorName}
-                        style={[allocStyles.optionItem, isSelected && allocStyles.optionItemSelected]}
-                        onPress={() => {
-                          setSelectedFloor(f.floorName);
-                          setOpenDropdown(null);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons
-                          name={isSelected ? 'radio-button-on' : 'radio-button-off'}
-                          size={18}
-                          color={isSelected ? '#15803d' : '#94a3b8'}
-                          style={{ marginRight: 10 }}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text style={[allocStyles.optionTitle, isSelected && { color: '#15803d' }]}>
-                            {f.floorName}
-                          </Text>
-                          <Text style={allocStyles.optionSub}>
-                            {f.totalRooms} rooms · {f.vacantBeds} vacant beds
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            allocStyles.badge,
-                            { backgroundColor: f.vacantBeds > 0 ? '#dcfce7' : '#fee2e2' },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              allocStyles.badgeText,
-                              { color: f.vacantBeds > 0 ? '#15803d' : '#dc2626' },
-                            ]}
-                          >
-                            {f.vacantBeds > 0 ? `${f.vacantBeds} open` : 'Full'}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              )}
-            </View>
-
-            {/* ── 2. ROOM SELECTION DROPDOWN ── */}
-            <Text style={[s.label, compactLabel]}>2. Select Room (on {selectedFloor}) *</Text>
-            <View style={allocStyles.card}>
-              <TouchableOpacity
-                style={allocStyles.selectorHeader}
-                onPress={() => setOpenDropdown(openDropdown === 'room' ? null : 'room')}
-                activeOpacity={0.7}
-              >
-                <View style={[allocStyles.selectorIconWrap, { backgroundColor: '#eff6ff' }]}>
-                  <Ionicons name="home-outline" size={18} color="#2563eb" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={allocStyles.selectorTitle}>
-                    {currentRoom ? `Room ${currentRoom.number}` : 'Select a Room'}
-                  </Text>
-                  <Text style={allocStyles.selectorSub}>
-                    {currentRoom
-                      ? `${currentRoom.roomType} · ${currentRoom.occupied}/${currentRoom.capacity} beds occupied`
-                      : 'Choose an available room'}
-                  </Text>
-                </View>
-                {currentRoom && (
-                  <View
-                    style={[
-                      allocStyles.badge,
-                      {
-                        backgroundColor: currentRoom.vacant > 0 ? '#dcfce7' : '#fee2e2',
-                        marginRight: 6,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        allocStyles.badgeText,
-                        { color: currentRoom.vacant > 0 ? '#15803d' : '#dc2626' },
-                      ]}
-                    >
-                      {currentRoom.vacant > 0 ? `${currentRoom.vacant} vacant` : 'Full'}
-                    </Text>
-                  </View>
-                )}
-                <Ionicons
-                  name={openDropdown === 'room' ? 'chevron-up' : 'chevron-down'}
-                  size={18}
-                  color="#64748b"
-                />
-              </TouchableOpacity>
-
-              {openDropdown === 'room' && (
-                <ScrollView
-                  style={allocStyles.optionsList}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator
-                >
-                  {roomsOnFloor.length === 0 && (
-                    <View style={{ padding: 14 }}>
-                      <Text style={{ fontSize: 13, color: colors.muted }}>
-                        No rooms created on {selectedFloor} yet.
-                      </Text>
-                    </View>
-                  )}
-                  {roomsOnFloor.map((r) => {
-                    const isSelected = r.id === selectedRoomId;
-                    return (
-                      <TouchableOpacity
-                        key={r.id}
-                        style={[allocStyles.optionItem, isSelected && allocStyles.optionItemSelected]}
-                        onPress={() => {
-                          setSelectedRoomId(r.id);
-                          setOpenDropdown(null);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons
-                          name={isSelected ? 'radio-button-on' : 'radio-button-off'}
-                          size={18}
-                          color={isSelected ? '#2563eb' : '#94a3b8'}
-                          style={{ marginRight: 10 }}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text style={[allocStyles.optionTitle, isSelected && { color: '#2563eb' }]}>
-                            Room {r.number}
-                            {r.roomName ? ` (${r.roomName})` : ''}
-                          </Text>
-                          <Text style={allocStyles.optionSub}>
-                            {r.roomType} · {r.acType === 'AC' ? 'AC' : 'Non-AC'}
-                            {r.attachedBathroom ? ' · Attached Bath' : ''}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            allocStyles.badge,
-                            { backgroundColor: r.vacant > 0 ? '#dcfce7' : '#fee2e2' },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              allocStyles.badgeText,
-                              { color: r.vacant > 0 ? '#15803d' : '#dc2626' },
-                            ]}
-                          >
-                            {r.vacant > 0 ? `${r.vacant} vacant` : 'Full'}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              )}
-            </View>
-
-            {/* ── 3. SECTION SELECTION DROPDOWN ── */}
-            <Text style={[s.label, compactLabel]}>3. Select Room Section / Bedroom *</Text>
-            <View style={allocStyles.card}>
-              <TouchableOpacity
-                style={allocStyles.selectorHeader}
-                onPress={() => setOpenDropdown(openDropdown === 'section' ? null : 'section')}
-                activeOpacity={0.7}
-                disabled={!currentRoom}
-              >
-                <View style={[allocStyles.selectorIconWrap, { backgroundColor: '#fdf4ff' }]}>
-                  <Ionicons name="grid-outline" size={18} color="#a855f7" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={allocStyles.selectorTitle}>
-                    {currentSection ? currentSection.sectionName : 'Main Room'}
-                  </Text>
-                  <Text style={allocStyles.selectorSub}>
-                    {currentSection
-                      ? `${currentSection.capacity} Beds (${currentSection.sharingType}) · ₹${money(currentSection.rentPerBed)}/bed`
-                      : currentRoom
-                      ? `${currentRoom.capacity} Beds · ₹${money(currentRoom.rent)}/bed`
-                      : 'Select room first'}
-                  </Text>
-                </View>
-                <Ionicons
-                  name={openDropdown === 'section' ? 'chevron-up' : 'chevron-down'}
-                  size={18}
-                  color="#64748b"
-                />
-              </TouchableOpacity>
-
-              {openDropdown === 'section' && currentRoom && (
-                <ScrollView
-                  style={allocStyles.optionsList}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator
-                >
-                  {currentRoom.sections && currentRoom.sections.length > 0 && availableSections.length === 0 && (
-                    <View style={{ padding: 14 }}>
-                      <Text style={{ fontSize: 13, color: '#dc2626', fontWeight: '600' }}>
-                        ⚠️ All sections in Room {currentRoom.number} are currently full.
-                      </Text>
-                    </View>
-                  )}
-                  {(!currentRoom.sections || currentRoom.sections.length === 0) && (
-                    <TouchableOpacity
-                      style={[allocStyles.optionItem, allocStyles.optionItemSelected]}
-                      onPress={() => setOpenDropdown(null)}
-                    >
-                      <Ionicons
-                        name="radio-button-on"
-                        size={18}
-                        color="#a855f7"
-                        style={{ marginRight: 10 }}
-                      />
-                      <View style={{ flex: 1 }}>
-                        <Text style={[allocStyles.optionTitle, { color: '#a855f7' }]}>
-                          Main Room
-                        </Text>
-                        <Text style={allocStyles.optionSub}>
-                          {currentRoom.capacity} Beds · ₹{money(currentRoom.rent)}/bed
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  )}
-                  {availableSections.map((sec) => {
-                    const isSelected = sec.id === selectedSectionId;
-                    const vacantInSec = sec.beds
-                      ? sec.beds.filter((b) => isVacantBed(b)).length
-                      : sec.capacity;
-                    return (
-                      <TouchableOpacity
-                        key={sec.id}
-                        style={[allocStyles.optionItem, isSelected && allocStyles.optionItemSelected]}
-                        onPress={() => {
-                          setSelectedSectionId(sec.id);
-                          setOpenDropdown(null);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons
-                          name={isSelected ? 'radio-button-on' : 'radio-button-off'}
-                          size={18}
-                          color={isSelected ? '#a855f7' : '#94a3b8'}
-                          style={{ marginRight: 10 }}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text style={[allocStyles.optionTitle, isSelected && { color: '#a855f7' }]}>
-                            {sec.sectionName}
-                          </Text>
-                          <Text style={allocStyles.optionSub}>
-                            {sec.capacity} Beds ({sec.sharingType}) · ₹{money(sec.rentPerBed)}/bed
-                            {sec.acType === 'AC' ? ' · AC' : ''}
-                            {sec.attachedBathroom ? ' · Attached Bath' : ''}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            allocStyles.badge,
-                            { backgroundColor: vacantInSec > 0 ? '#dcfce7' : '#fee2e2' },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              allocStyles.badgeText,
-                              { color: vacantInSec > 0 ? '#15803d' : '#dc2626' },
-                            ]}
-                          >
-                            {vacantInSec > 0 ? `${vacantInSec} vacant` : 'Full'}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              )}
-            </View>
-
-            {/* ── 4. BED SELECTION CHIPS ── */}
-            {vacantBeds.length > 0 && (
-              <>
-                <Text style={[s.label, compactLabel]}>Assign Bed in {currentSection ? currentSection.sectionName : 'Room'}</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 4 }}>
-                  <Pressable
-                    onPress={() => setSelectedBedId(null)}
-                    style={[s.chip, selectedBedId === null && s.chipOn]}
-                  >
-                    <Text style={[s.chipText, selectedBedId === null && { color: '#fff' }]}>
-                      ✨ Auto-Assign
-                    </Text>
-                  </Pressable>
-                  {vacantBeds.map((item) => (
-                    <Pressable
-                      key={item.bed.id}
-                      onPress={() => handleSelectBed(item)}
-                      style={[s.chip, selectedBedId === item.bed.id && s.chipOn]}
-                    >
-                      <Text style={[s.chipText, selectedBedId === item.bed.id && { color: '#fff' }]}>
-                        {item.bed.bedNumber} (₹{money(item.rent)})
-                      </Text>
-                    </Pressable>
+                <Text style={addStyles.label}>Floor</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={addStyles.row}>
+                  {floorOptions.map((f) => (
+                    <Choice
+                      key={f.floorName}
+                      label={shortFloor(f.floorName)}
+                      sub={f.vacantBeds > 0 ? `${f.vacantBeds} open` : 'Full'}
+                      tone={f.vacantBeds > 0 ? 'good' : 'bad'}
+                      on={f.floorName === selectedFloor}
+                      onPress={() => setSelectedFloor(f.floorName)}
+                    />
                   ))}
                 </ScrollView>
-              </>
-            )}
 
-            <Pressable
-              style={[s.saveBtn, { backgroundColor: '#2563eb', marginTop: 18 }]}
-              onPress={() => {
-                if (
-                  !currentRoom ||
-                  Number(currentRoom.vacant ?? 0) <= 0 ||
-                  (
-                    vacantBeds.length === 0 &&
-                    (
-                      (currentSection?.beds?.length ?? 0) > 0 ||
-                      (currentRoom.sections?.length ?? 0) > 0
-                    )
-                  )
-                ) {
-                  Alert.alert('Select available bed', 'Please select a room/section with at least one vacant bed.');
-                  return;
-                }
-                // Validate a selected bed only when the room has individual bed records.
-                // Flats/rooms with sections: [] use room-level vacancy and submit bedId: null.
-                if (
-                  selectedBedId != null &&
-                  !vacantBeds.some((item) => item.bed.id === selectedBedId)
-                ) {
-                  Alert.alert('Select available bed', 'The selected bed is no longer available. Please choose another bed.');
-                  return;
-                }
-                setStep(2);
-              }}
-            >
-              <Text style={s.saveText}>Continue to Resident Details</Text>
-              <Ionicons name="arrow-forward" size={17} color="#fff" />
-            </Pressable>
+                <Text style={addStyles.label}>Room · {roomsOnFloor.length} on this floor</Text>
+                {roomsOnFloor.length === 0 ? (
+                  <Text style={addStyles.hint}>No rooms created on {selectedFloor} yet.</Text>
+                ) : (
+                  <View style={addStyles.wrap}>
+                    {roomsOnFloor.map((r) => (
+                      <Choice
+                        key={r.id}
+                        label={String(r.number)}
+                        sub={r.vacant > 0 ? `${r.vacant} vacant` : 'Full'}
+                        tone={r.vacant > 0 ? 'good' : 'bad'}
+                        on={r.id === selectedRoomId}
+                        disabled={r.vacant <= 0 && r.id !== selectedRoomId}
+                        onPress={() => setSelectedRoomId(r.id)}
+                      />
+                    ))}
+                  </View>
+                )}
+                {currentRoom ? (
+                  <Text style={addStyles.hint}>
+                    {currentRoom.roomType} · {currentRoom.acType === 'AC' ? 'AC' : 'Non-AC'}
+                    {currentRoom.attachedBathroom ? ' · Attached bath' : ''}
+                  </Text>
+                ) : null}
+
+                {(currentRoom?.sections?.length ?? 0) > 0 && (
+                  <>
+                    <Text style={addStyles.label}>Section / bedroom</Text>
+                    {availableSections.length === 0 ? (
+                      <Text style={addStyles.warn}>All sections in Room {currentRoom?.number} are full.</Text>
+                    ) : (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={addStyles.row}>
+                        {availableSections.map((sec) => {
+                          const vac = sec.beds ? sec.beds.filter((b) => isVacantBed(b)).length : sec.capacity;
+                          return (
+                            <Choice
+                              key={sec.id}
+                              label={sec.sectionName}
+                              sub={`${vac} vacant · ${money(sec.rentPerBed)}`}
+                              on={sec.id === selectedSectionId}
+                              onPress={() => setSelectedSectionId(sec.id)}
+                            />
+                          );
+                        })}
+                      </ScrollView>
+                    )}
+                  </>
+                )}
+
+                {vacantBeds.length > 0 && (
+                  <>
+                    <Text style={addStyles.label}>Bed</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={addStyles.row}>
+                      <Choice label="Auto" sub="any vacant" on={selectedBedId === null} onPress={() => setSelectedBedId(null)} />
+                      {vacantBeds.map((item) => (
+                        <Choice
+                          key={item.bed.id}
+                          label={String(item.bed.bedNumber)}
+                          sub={money(item.rent)}
+                          on={selectedBedId === item.bed.id}
+                          onPress={() => handleSelectBed(item)}
+                        />
+                      ))}
+                    </ScrollView>
+                  </>
+                )}
               </>
             )}
 
             {step === 2 && (
               <>
-            {/* ── 5. RESIDENT INFORMATION ── */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-              <Text style={[s.label, compactLabel, { marginTop: 0 }]}>Resident Information</Text>
-              <Pressable onPress={() => setStep(1)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, padding: 6 }}>
-                <Ionicons name="create-outline" size={14} color="#2563eb" />
-                <Text style={{ color: '#2563eb', fontSize: 12, fontWeight: '700' }}>Change room</Text>
-              </Pressable>
-            </View>
-            <View style={{ backgroundColor: '#eff6ff', borderRadius: 10, padding: 11, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name="bed-outline" size={18} color="#2563eb" />
-              <View style={{ flex: 1 }}>
-                <Text style={{ color: '#1e3a8a', fontSize: 13, fontWeight: '700' }}>Room {currentRoom?.number} · {currentSection?.sectionName || 'Main Room'}</Text>
-                <Text style={{ color: '#475569', fontSize: 11 }}>{selectedBedId ? vacantBeds.find((b) => b.bed.id === selectedBedId)?.bed.bedNumber : 'Auto-assign available bed'}</Text>
-              </View>
-            </View>
-            <Text style={[s.label, compactLabel]}>Stay Duration / Billing Type *</Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
-              <Pressable
-                style={[s.chip, stayType === 'MONTHLY' && s.chipOn, { flex: 1, paddingVertical: 9 }]}
-                onPress={() => setStayType('MONTHLY')}
-              >
-                <Text style={[s.chipText, stayType === 'MONTHLY' && { color: '#fff', fontWeight: '700' }]}>
-                  📅 Monthly Stay
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[s.chip, stayType === 'DAILY' && s.chipOn, { flex: 1, paddingVertical: 9 }]}
-                onPress={() => setStayType('DAILY')}
-              >
-                <Text style={[s.chipText, stayType === 'DAILY' && { color: '#fff', fontWeight: '700' }]}>
-                  🏨 Day-wise Stay
-                </Text>
-              </Pressable>
-            </View>
-
-            <Text style={[s.label, compactLabel]}>Full Name *</Text>
-            <TextInput
-              style={s.input}
-              value={name}
-              onChangeText={setName}
-              placeholder="e.g. John Doe"
-              placeholderTextColor={colors.muted}
-            />
-
-            <Text style={[s.label, compactLabel]}>Mobile Number * (used as the login)</Text>
-            <TextInput
-              style={s.input}
-              value={phone}
-              onChangeText={setPhone}
-              keyboardType="phone-pad"
-              maxLength={15}
-              placeholder="10-15 digits"
-              placeholderTextColor={colors.muted}
-            />
-
-            <Text style={[s.label, compactLabel]}>Aadhaar Number *</Text>
-            <TextInput
-              style={s.input}
-              value={aadhaar}
-              onChangeText={(v) => setAadhaar(v.replace(/\D/g, ''))}
-              keyboardType="number-pad"
-              maxLength={12}
-              placeholder="12 digits"
-              placeholderTextColor={colors.muted}
-            />
-            <Text style={[s.muted, { fontSize: 11, marginTop: 4 }]}>
-              A login is created: username is the mobile number, password is the last 4 digits of the Aadhaar number. The
-              resident must change it at first login. The Aadhaar number itself is not saved.
-            </Text>
-
-            <ImagePickerField label="Resident photo (optional)" files={photo} onChange={setPhoto} />
-            <ImagePickerField label="ID card - Aadhaar, licence, etc. (optional)" files={idCard} onChange={setIdCard} />
-
-            {stayType === 'DAILY' ? (
-              <>
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[s.label, compactLabel]}>Daily Rate (₹/day) *</Text>
-                    <TextInput
-                      style={s.input}
-                      value={dailyRate}
-                      onChangeText={setDailyRate}
-                      keyboardType="number-pad"
-                      placeholderTextColor={colors.muted}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[s.label, compactLabel]}>Check-in Date & Time *</Text>
-                    <DateField value={checkInTime} onChange={setCheckInTime} time />
-                  </View>
+                <View style={addStyles.roomPill}>
+                  <Ionicons name="bed-outline" size={16} color="#2563eb" />
+                  <Text style={addStyles.roomPillText} numberOfLines={1}>{summaryText}</Text>
+                  <Pressable onPress={() => setStep(1)} hitSlop={10} accessibilityRole="button" accessibilityLabel="Change room">
+                    <Text style={addStyles.roomPillLink}>Change</Text>
+                  </Pressable>
                 </View>
 
-                <Text style={[s.label, compactLabel]}>Expected Check-out Date & Time (Optional)</Text>
-                <DateField
-                  value={checkOutTime}
-                  onChange={setCheckOutTime}
-                  time
-                  clearable
-                  min={checkInTime.slice(0, 10)}
-                  placeholder="Open-ended (tap to set)"
+                <Text style={addStyles.label}>Stay type</Text>
+                <View style={addStyles.seg}>
+                  {(['MONTHLY', 'DAILY'] as StayType[]).map((t) => (
+                    <Pressable
+                      key={t}
+                      style={[addStyles.segBtn, stayType === t && addStyles.segBtnOn]}
+                      onPress={() => setStayType(t)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: stayType === t }}
+                    >
+                      <Text style={[addStyles.segText, stayType === t && addStyles.segTextOn]}>
+                        {t === 'MONTHLY' ? 'Monthly' : 'Day-wise'}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <Text style={addStyles.label}>Full name *</Text>
+                <TextInput
+                  style={s.input}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="e.g. John Doe"
+                  placeholderTextColor={colors.muted}
                 />
-              </>
-            ) : (
-              <>
-                <View style={{ flexDirection: 'row', gap: 10 }}>
+
+                <View style={addStyles.twoCol}>
                   <View style={{ flex: 1 }}>
-                    <Text style={[s.label, compactLabel]}>Monthly Rent (₹) *</Text>
+                    <Text style={addStyles.label}>Mobile * (login)</Text>
                     <TextInput
                       style={s.input}
-                      value={rent}
-                      onChangeText={setRent}
-                      keyboardType="number-pad"
+                      value={phone}
+                      onChangeText={setPhone}
+                      keyboardType="phone-pad"
+                      maxLength={15}
+                      placeholder="10-15 digits"
                       placeholderTextColor={colors.muted}
                     />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={[s.label, compactLabel]}>Security Deposit (₹)</Text>
+                    <Text style={addStyles.label}>Aadhaar *</Text>
                     <TextInput
                       style={s.input}
-                      value={securityDeposit}
-                      onChangeText={setSecurityDeposit}
+                      value={aadhaar}
+                      onChangeText={(v) => setAadhaar(v.replace(/\D/g, ''))}
                       keyboardType="number-pad"
+                      maxLength={12}
+                      placeholder="12 digits"
                       placeholderTextColor={colors.muted}
                     />
                   </View>
                 </View>
-                <Text style={[s.label, compactLabel]}>Joining Date *</Text>
-                <DateField value={joinedOn} onChange={setJoinedOn} />
-              </>
-            )}
-
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-              <Pressable
-                style={{ flex: 0.8, height: 46, borderRadius: 10, borderWidth: 1, borderColor: '#cbd5e1', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 5 }}
-                onPress={() => setStep(1)}
-                disabled={busy}
-              >
-                <Ionicons name="arrow-back" size={16} color="#334155" />
-                <Text style={{ color: '#334155', fontWeight: '700' }}>Back</Text>
-              </Pressable>
-              <Pressable
-                style={[s.saveBtn, { flex: 1.5, marginTop: 0 }, busy && { opacity: 0.6 }]}
-                onPress={submit}
-                disabled={busy}
-              >
-                <Text style={s.saveText}>
-                  {busy ? 'Assigning...' : initialRequest ? 'Approve & Allocate Bed' : 'Add Resident'}
+                <Text style={addStyles.note}>
+                  Login is the mobile number. First password is the last 4 Aadhaar digits (changed at first login). The
+                  Aadhaar number is not saved.
                 </Text>
-              </Pressable>
-            </View>
+
+                {stayType === 'DAILY' ? (
+                  <>
+                    <View style={addStyles.twoCol}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={addStyles.label}>Daily rate *</Text>
+                        <TextInput
+                          style={s.input}
+                          value={dailyRate}
+                          onChangeText={setDailyRate}
+                          keyboardType="number-pad"
+                          placeholderTextColor={colors.muted}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={addStyles.label}>Check-in *</Text>
+                        <DateField value={checkInTime} onChange={setCheckInTime} time />
+                      </View>
+                    </View>
+                    <Text style={addStyles.label}>Expected check-out (optional)</Text>
+                    <DateField
+                      value={checkOutTime}
+                      onChange={setCheckOutTime}
+                      time
+                      clearable
+                      min={checkInTime.slice(0, 10)}
+                      placeholder="Open-ended (tap to set)"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <View style={addStyles.twoCol}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={addStyles.label}>Monthly rent *</Text>
+                        <TextInput
+                          style={s.input}
+                          value={rent}
+                          onChangeText={setRent}
+                          keyboardType="number-pad"
+                          placeholderTextColor={colors.muted}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={addStyles.label}>Security deposit</Text>
+                        <TextInput
+                          style={s.input}
+                          value={securityDeposit}
+                          onChangeText={setSecurityDeposit}
+                          keyboardType="number-pad"
+                          placeholderTextColor={colors.muted}
+                        />
+                      </View>
+                    </View>
+                    <Text style={addStyles.label}>Joining date *</Text>
+                    <DateField value={joinedOn} onChange={setJoinedOn} />
+                  </>
+                )}
+
+                <Text style={addStyles.label}>Photos (optional)</Text>
+                <ImagePickerField label="Resident photo" files={photo} onChange={setPhoto} />
+                <ImagePickerField label="ID card (Aadhaar, licence, etc.)" files={idCard} onChange={setIdCard} />
               </>
             )}
           </ScrollView>
+
+          <View style={[addStyles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+            {step === 1 ? (
+              <>
+                <Text style={addStyles.summary} numberOfLines={1}>{summaryText}</Text>
+                <Pressable
+                  style={[s.saveBtn, addStyles.primary, { backgroundColor: '#2563eb' }]}
+                  onPress={() => {
+                    if (
+                      !currentRoom ||
+                      Number(currentRoom.vacant ?? 0) <= 0 ||
+                      (
+                        vacantBeds.length === 0 &&
+                        (
+                          (currentSection?.beds?.length ?? 0) > 0 ||
+                          (currentRoom.sections?.length ?? 0) > 0
+                        )
+                      )
+                    ) {
+                      Alert.alert('Select available bed', 'Please select a room/section with at least one vacant bed.');
+                      return;
+                    }
+                    if (selectedBedId != null && !vacantBeds.some((item) => item.bed.id === selectedBedId)) {
+                      Alert.alert('Select available bed', 'The selected bed is no longer available. Please choose another bed.');
+                      return;
+                    }
+                    setStep(2);
+                  }}
+                >
+                  <Text style={s.saveText}>Continue to resident details</Text>
+                  <Ionicons name="arrow-forward" size={17} color="#fff" />
+                </Pressable>
+              </>
+            ) : (
+              <View style={addStyles.footerRow}>
+                <Pressable style={addStyles.backBtn} onPress={() => setStep(1)} disabled={busy}>
+                  <Ionicons name="arrow-back" size={16} color="#334155" />
+                  <Text style={{ color: '#334155', fontWeight: '700' }}>Back</Text>
+                </Pressable>
+                <Pressable
+                  style={[s.saveBtn, addStyles.primary, { flex: 1.5 }, busy && { opacity: 0.6 }]}
+                  onPress={submit}
+                  disabled={busy}
+                >
+                  <Text style={s.saveText}>
+                    {busy ? 'Assigning...' : initialRequest ? 'Approve & allocate bed' : 'Add resident'}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>

@@ -78,7 +78,7 @@ export default function PendingDues() {
   }, [dues, search, floorFilter]);
 
   const notify = (d: PendingDue) =>
-    Alert.alert('Send reminder', `Send a WhatsApp due reminder of ${money(d.due)} to ${d.name}?`, [
+    Alert.alert('Send reminder', `Send a due reminder of ${money(d.due)} to ${d.name}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Send',

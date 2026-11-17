@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "596161457784",
+    "project_id": "pg-management-2bea4",
+    "storage_bucket": "pg-management-2bea4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:596161457784:android:d7070ba3a6c211f89bc78d",
+        "android_client_info": {
+          "package_name": "com.mystay.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAkIQrUxT2PyZioHZI46tHHUvjYv2caxBg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:596161457784:android:74adee71b75fd61c9bc78d",
+        "android_client_info": {
+          "package_name": "com.pg"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAkIQrUxT2PyZioHZI46tHHUvjYv2caxBg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

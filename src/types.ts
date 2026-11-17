@@ -626,8 +626,27 @@ export type MealOccurrence = {
   endTime: string;
   items: string[];
   state: 'NOW' | 'UPCOMING';
-  attending: boolean;
+  /** The resident's reply: YES (eating), NO (not eating) or null (not answered yet). */
+  answer: 'YES' | 'NO' | null;
   canRespond: boolean;
+};
+
+/** Headcount for one meal on one date, for the owner's home screen. */
+export type MealSummary = {
+  mealId: number;
+  name: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  state: 'NOW' | 'UPCOMING';
+  attending: number;
+  notAttending: number;
+  notAnswered: number;
+};
+
+export type MenuSummary = {
+  activeResidents: number;
+  meals: MealSummary[];
 };
 
 export type FoodMenu = {
