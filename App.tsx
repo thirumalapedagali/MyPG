@@ -108,7 +108,7 @@ function PerProperty({ title, children }: { title: string; children: React.React
 function OwnerTabs() {
   const opts = useScreenOptions();
   return (
-    <Tab.Navigator screenOptions={opts}>
+    <Tab.Navigator screenOptions={opts} backBehavior="history">
       <Tab.Screen name="Dashboard" component={Dashboard} />
       <Tab.Screen name="Today" component={Today} />
       <Tab.Screen name="Overview" component={Overview} />
@@ -142,7 +142,7 @@ function OwnerTabs() {
 function ResidentTabs() {
   const opts = useScreenOptions();
   return (
-    <Tab.Navigator screenOptions={opts}>
+    <Tab.Navigator screenOptions={opts} backBehavior="history">
       <Tab.Screen name="Home" component={ResidentDashboard} />
       <Tab.Screen name="My Dues" component={MyDues} />
       <Tab.Screen name="Explore" component={ExploreScreen} />
@@ -218,19 +218,52 @@ function Root() {
   );
 }
 
+function useDoubleBackToExit(navRef: ReturnType<typeof useNavigationContainerRef>) {
+  const lastBackPress = useRef<number>(0);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    const onBackPress = () => {
+      if (!navRef.isReady()) return false;
+
+      if (navRef.canGoBack()) {
+        navRef.goBack();
+        return true;
+      }
+
+      const now = Date.now();
+      if (lastBackPress.current && now - lastBackPress.current < 2000) {
+        BackHandler.exitApp();
+        return true;
+      }
+
+      lastBackPress.current = now;
+      ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      return true;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [navRef]);
+}
+
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
   const onSplashDone = useCallback(() => setShowSplash(false), []);
+  const navRef = useNavigationContainerRef();
 
   useEffect(() => {
     const cleanup = initNotificationListeners();
     return cleanup;
   }, []);
 
+  useDoubleBackToExit(navRef);
+
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <NavigationContainer>
+        <NavigationContainer ref={navRef}>
           <Root />
           <StatusBar style="dark" />
         </NavigationContainer>
