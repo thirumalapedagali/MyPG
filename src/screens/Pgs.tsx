@@ -9,51 +9,81 @@ import { PictureTarget, PicturesSheet } from '../pictures';
 import { GENDER_POLICY, STAY_TYPE, unitLabelFor, useLookup } from '../lookups';
 import { initialAmenities, pickedCodes, useTypeAmenities } from '../propertyForm';
 import { PgInfo, PgUser, PropertyConfiguration } from '../types';
-import { AddPropertyModal, Badge, Button, Card, Empty, FormModal, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
+import { AddPropertyModal, Badge, Button, Card, Chips, Empty, FormModal, HeaderAction, Screen, SearchInput, colors, s } from '../ui';
 
 const PAGE = 15;
+const FILTERS = ['All', 'Active', 'Expiring Soon', 'Expired', 'Blocked'] as const;
+type Filter = (typeof FILTERS)[number];
 
-const expiry = (iso: string | null) => {
-  if (!iso) return { text: 'No licence', expired: true };
-  const d = new Date(iso);
-  const expired = d < new Date();
-  return { text: `${expired ? 'Expired' : 'Valid until'} ${d.toISOString().slice(0, 10)}`, expired };
+const getLicenseInfo = (iso: string | null) => {
+  if (!iso) return { text: 'No license', status: 'EXPIRED' as const, color: colors.bad };
+  const expiryDate = new Date(iso);
+  const now = new Date();
+  const soon = new Date();
+  soon.setDate(now.getDate() + 30);
+
+  if (expiryDate < now) {
+    return { text: `Expired (${iso.slice(0, 10)})`, status: 'EXPIRED' as const, color: colors.bad };
+  }
+  if (expiryDate < soon) {
+    return { text: `Expiring soon (${iso.slice(0, 10)})`, status: 'SOON' as const, color: colors.warn };
+  }
+  return { text: `Valid until ${iso.slice(0, 10)}`, status: 'VALID' as const, color: colors.good };
 };
 
-const roleColor = (r: string) => (r === 'OWNER' ? '#7c3aed' : r === 'MANAGER' ? '#2563eb' : r === 'RESIDENT' ? '#0d9488' : '#6b7280');
+const roleColor = (r: string) =>
+  r === 'OWNER' ? '#7c3aed' : r === 'MANAGER' ? '#2563eb' : r === 'RESIDENT' ? '#0d9488' : '#6b7280';
 
 /** Lazily loads and lists everyone who can log in to one PG. */
 function PgUsers({ pgId }: { pgId: number }) {
   const { data, loading, error } = useResource(() => get<PgUser[]>(`/api/admin/pgs/${pgId}/users`));
   if (loading) return <ActivityIndicator style={{ marginVertical: 8 }} />;
   if (error) return <Text style={[s.muted, { color: colors.bad }]}>{error}</Text>;
-  if (!data || data.length === 0) return <Text style={s.muted}>No users.</Text>;
+  if (!data || data.length === 0) return <Text style={s.muted}>No assigned users found for this property.</Text>;
   return (
-    <View style={{ gap: 4 }}>
+    <View style={{ gap: 6 }}>
       {data.map((u) => (
-        <View key={u.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Text style={{ flex: 1, fontSize: 13, color: colors.text }} numberOfLines={1}>
-            {u.username}
-            <Text style={s.muted}>{u.mobile ? `  ${u.mobile}` : ''}</Text>
-          </Text>
-          <Badge text={u.role} color={roleColor(u.role)} />
-          <Badge text={u.status === 'ACTIVE' ? 'Active' : 'Blocked'} color={u.status === 'ACTIVE' ? colors.good : colors.bad} />
+        <View
+          key={u.id}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor: '#f8fafc',
+            borderRadius: 8,
+            paddingVertical: 6,
+            paddingHorizontal: 10,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+            <Ionicons name="person-outline" size={14} color={colors.muted} />
+            <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }} numberOfLines={1}>
+              {u.username}
+            </Text>
+            {!!u.mobile && <Text style={{ fontSize: 12, color: colors.muted }}>({u.mobile})</Text>}
+          </View>
+          <View style={{ flexDirection: 'row', gap: 4 }}>
+            <Badge text={u.role} color={roleColor(u.role)} />
+            <Badge text={u.status === 'ACTIVE' ? 'Active' : 'Blocked'} color={u.status === 'ACTIVE' ? colors.good : colors.bad} />
+          </View>
         </View>
       ))}
     </View>
   );
 }
 
-/** Shop Management equivalent (SUPER_ADMIN only): create PGs, open one, block it, extend its licence, see its users. */
+/** Super Admin property management console. */
 export default function Pgs() {
   const { user, selectPg, logout } = useAuth();
   const nav = useNavigation<NavigationProp<ParamListBase>>();
   const stayTypes = useLookup(STAY_TYPE);
   const genderPolicies = useLookup(GENDER_POLICY);
   const { data, error, loading, refreshing, refresh, reload } = useResource(() => get<PgInfo[]>('/api/admin/pgs'));
+
   const [open, setOpen] = useState(false);
   const [extend, setExtend] = useState<PgInfo | null>(null);
   const [editingPg, setEditingPg] = useState<PgInfo | null>(null);
+  const [filter, setFilter] = useState<Filter>('All');
   const [search, setSearch] = useState('');
   const [shown, setShown] = useState(PAGE);
   const [usersOpen, setUsersOpen] = useState<number | null>(null);
@@ -62,7 +92,6 @@ export default function Pgs() {
   const [saved, setSaved] = useState<{ id: number; codes: string[] } | null>(null);
   const editAmenities = useTypeAmenities(editingPg ? editType ?? editingPg.stayType ?? 'PG' : undefined);
 
-  // What the edited property has ticked now (empty for properties that only have the old free-text list).
   const editingId = editingPg?.id;
   useEffect(() => {
     if (!editingId) return;
@@ -75,14 +104,38 @@ export default function Pgs() {
     };
   }, [editingId]);
   const savedCodes = saved && saved.id === editingId ? saved.codes : [];
+
   const q = search.trim().toLowerCase();
-  const filtered = (data ?? []).filter(
-    (p) => !q || [p.name, p.city, p.ownerName, p.address].some((v) => v?.toLowerCase().includes(q)),
-  );
+  const allList = data ?? [];
+
+  const filtered = allList.filter((pg) => {
+    const lic = getLicenseInfo(pg.licenseExpiry);
+    if (filter === 'Active' && !pg.active) return false;
+    if (filter === 'Blocked' && pg.active) return false;
+    if (filter === 'Expired' && lic.status !== 'EXPIRED') return false;
+    if (filter === 'Expiring Soon' && lic.status !== 'SOON') return false;
+
+    if (!q) return true;
+    return [pg.name, pg.city, pg.ownerName, pg.address, pg.mobile, pg.email].some((v) =>
+      v?.toLowerCase().includes(q)
+    );
+  });
+
+  const totalCount = allList.length;
+  const activeCount = allList.filter((p) => p.active).length;
+  const blockedCount = allList.filter((p) => !p.active).length;
+  const expiringSoonCount = allList.filter((p) => p.active && getLicenseInfo(p.licenseExpiry).status === 'SOON').length;
+  const expiredCount = allList.filter((p) => getLicenseInfo(p.licenseExpiry).status === 'EXPIRED').length;
 
   const openPg = async (pg: PgInfo) => {
-    // Opening a PG swaps the token and remounts the navigator onto that PG's screens.
-    await attempt(() => selectPg(pg.id));
+    const ok = await attempt(() => selectPg(pg.id));
+    if (ok) {
+      if ((nav as any).popToTop) {
+        (nav as any).popToTop();
+      } else {
+        nav.navigate('Main');
+      }
+    }
   };
 
   const toggle = async (pg: PgInfo) => {
@@ -91,7 +144,7 @@ export default function Pgs() {
 
   return (
     <Screen
-      title="Manage PGs"
+      title="Manage Properties"
       action={
         <View style={{ flexDirection: 'row' }}>
           <HeaderAction label="Add" icon="add-circle" onPress={() => setOpen(true)} />
@@ -107,77 +160,196 @@ export default function Pgs() {
       refreshing={refreshing}
       onRefresh={refresh}
     >
+      {/* ── Summary Stats Overview ── */}
+      {data && (
+        <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          <View style={{ flex: 1, minWidth: 64, backgroundColor: '#f1f5f9', borderRadius: 8, padding: 8, alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: colors.text }}>{totalCount}</Text>
+            <Text style={{ fontSize: 11, color: colors.muted }}>Total</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 64, backgroundColor: '#dcfce7', borderRadius: 8, padding: 8, alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: colors.good }}>{activeCount}</Text>
+            <Text style={{ fontSize: 11, color: colors.good }}>Active</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 64, backgroundColor: '#fef3c7', borderRadius: 8, padding: 8, alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: colors.warn }}>{expiringSoonCount}</Text>
+            <Text style={{ fontSize: 11, color: colors.warn }}>Soon</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 64, backgroundColor: '#fee2e2', borderRadius: 8, padding: 8, alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: colors.bad }}>{expiredCount}</Text>
+            <Text style={{ fontSize: 11, color: colors.bad }}>Expired</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 64, backgroundColor: '#f3f4f6', borderRadius: 8, padding: 8, alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: colors.muted }}>{blockedCount}</Text>
+            <Text style={{ fontSize: 11, color: colors.muted }}>Blocked</Text>
+          </View>
+        </View>
+      )}
+
+      {/* ── Search & Filter Chips ── */}
       <SearchInput
         value={search}
         onChange={(t) => {
           setSearch(t);
           setShown(PAGE);
         }}
-        placeholder="Search by name, city or owner"
+        placeholder="Search by name, city, address or owner..."
       />
-      {data && <Text style={[s.muted, { marginBottom: 8 }]}>{filtered.length} of {data.length} properties</Text>}
-      {data && data.length === 0 && <Empty text="No PGs yet. Tap Add to create the first one." />}
-      {data && data.length > 0 && filtered.length === 0 && <Empty text="No PGs match your search." />}
+
+      <Chips
+        options={FILTERS}
+        value={filter}
+        onChange={(f) => {
+          setFilter(f);
+          setShown(PAGE);
+        }}
+      />
+
+      {data && (
+        <Text style={[s.muted, { marginBottom: 8 }]}>
+          Showing {filtered.length} of {data.length} properties
+        </Text>
+      )}
+
+      {data && data.length === 0 && <Empty text="No properties yet. Tap Add to create the first one." />}
+      {data && data.length > 0 && filtered.length === 0 && <Empty text="No properties match your filter/search." />}
+
+      {/* ── Property Cards Grid ── */}
       {filtered.slice(0, shown).map((pg) => {
-        const lic = expiry(pg.licenseExpiry);
+        const lic = getLicenseInfo(pg.licenseExpiry);
         const showUsers = usersOpen === pg.id;
+        const isOpen = user?.pgId === pg.id;
+
         return (
-          <Card key={pg.id} style={{ paddingVertical: 10, paddingHorizontal: 12 }}>
-            <View style={[s.row, { alignItems: 'flex-start' }]}>
+          <Card key={pg.id} style={{ padding: 14, marginBottom: 12 }}>
+            {/* Header: Name + Badges */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 2 }}>
-                  <Text style={s.h2}>{pg.name}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <Text style={[s.h2, { fontSize: 17 }]} numberOfLines={1}>
+                    {pg.name}
+                  </Text>
+                  {isOpen && <Badge text="Currently Opened" color={colors.primary} />}
                   <Badge
-                    text={pg.stayType || 'PG'}
-                    color={pg.stayType === 'APARTMENT' ? '#7c3aed' : pg.stayType === 'HOSTEL' ? '#ea580c' : '#2563eb'}
+                    text={pg.active ? 'Active' : 'Blocked'}
+                    color={pg.active ? colors.good : colors.bad}
                   />
-                  {pg.genderType ? (
-                    <Badge
-                      text={pg.genderType === 'GENTS' ? 'Gents' : pg.genderType === 'LADIES' ? 'Ladies' : 'Unisex'}
-                      color={pg.genderType === 'GENTS' ? '#2563eb' : pg.genderType === 'LADIES' ? '#db2777' : '#0d9488'}
-                    />
-                  ) : null}
                 </View>
-                <Text style={s.muted} numberOfLines={2}>
-                  {pg.ownerName ?? 'Owner'}
-                  {pg.city ? ` · ${pg.city}` : ''}
-                  {pg.address ? ` · ${pg.address}` : ''}
-                  {pg.totalFloors ? ` · ${pg.totalFloors} Floors` : ''}
+              </View>
+            </View>
+
+            {/* Badges & License Row */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+              <Badge
+                text={pg.stayType || 'PG'}
+                color={pg.stayType === 'APARTMENT' ? '#7c3aed' : pg.stayType === 'HOSTEL' ? '#ea580c' : '#2563eb'}
+              />
+              {pg.genderType ? (
+                <Badge
+                  text={pg.genderType === 'GENTS' ? 'Gents' : pg.genderType === 'LADIES' ? 'Ladies' : 'Unisex'}
+                  color={pg.genderType === 'GENTS' ? '#2563eb' : pg.genderType === 'LADIES' ? '#db2777' : '#0d9488'}
+                />
+              ) : null}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: lic.color + '15', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
+                <Ionicons name="calendar-outline" size={12} color={lic.color} />
+                <Text style={{ fontSize: 11, fontWeight: '700', color: lic.color }}>{lic.text}</Text>
+              </View>
+            </View>
+
+            {/* Details Grid Section */}
+            <View
+              style={{
+                backgroundColor: '#f8fafc',
+                borderRadius: 10,
+                padding: 10,
+                marginTop: 10,
+                gap: 6,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="person-circle-outline" size={16} color={colors.primary} />
+                <Text style={{ fontSize: 13, color: colors.text, fontWeight: '600', flex: 1 }}>
+                  Owner: {pg.ownerName ?? 'Unassigned'}
+                  {pg.mobile ? <Text style={{ color: colors.muted, fontWeight: '400' }}> · {pg.mobile}</Text> : null}
                 </Text>
               </View>
-              <Badge text={user?.pgId === pg.id ? 'Open' : pg.active ? 'Active' : 'Blocked'} color={pg.active ? colors.good : colors.bad} />
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="location-outline" size={16} color={colors.muted} />
+                <Text style={{ fontSize: 12, color: colors.muted, flex: 1 }} numberOfLines={1}>
+                  {pg.city ? `${pg.city}` : 'No city'}
+                  {pg.address ? ` · ${pg.address}` : ''}
+                </Text>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 2 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="layers-outline" size={14} color={colors.muted} />
+                  <Text style={{ fontSize: 12, color: colors.muted }}>
+                    {pg.totalFloors ? `${pg.totalFloors} Floors` : 'Single Floor'}
+                  </Text>
+                </View>
+                {pg.startingPrice ? (
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: colors.good }}>
+                    From ₹{pg.startingPrice}/mo
+                  </Text>
+                ) : null}
+              </View>
             </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
-              <Ionicons name="calendar-outline" size={14} color={lic.expired ? colors.bad : colors.muted} />
-              <Text style={[s.muted, lic.expired && { color: colors.bad }]}>{lic.text}</Text>
-            </View>
+
+            {/* Collapsible Users Accordion */}
             <Pressable
               onPress={() => setUsersOpen(showUsers ? null : pg.id)}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingVertical: 8,
+                paddingHorizontal: 4,
+                marginTop: 4,
+              }}
             >
-              <Ionicons name="people-outline" size={14} color={colors.blue} />
-              <Text style={{ color: colors.blue, fontSize: 13, fontWeight: '600', flex: 1 }}>{showUsers ? 'Hide users' : 'Users'}</Text>
-              <Ionicons name={showUsers ? 'chevron-up' : 'chevron-down'} size={14} color={colors.blue} />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="people-outline" size={15} color={colors.primary} />
+                <Text style={{ color: colors.primary, fontSize: 13, fontWeight: '700' }}>
+                  {showUsers ? 'Hide Assigned Users' : 'View Assigned Logins'}
+                </Text>
+              </View>
+              <Ionicons name={showUsers ? 'chevron-up' : 'chevron-down'} size={16} color={colors.primary} />
             </Pressable>
+
             {showUsers && (
-              <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+              <View style={{ marginBottom: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
                 <PgUsers pgId={pg.id} />
               </View>
             )}
+
+            {/* Actions Toolbar */}
             <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-              <Button small label="Open" onPress={() => openPg(pg)} />
+              <Button small label="Open PG" onPress={() => openPg(pg)} />
               <Button small kind="ghost" label="Edit" onPress={() => setEditingPg(pg)} />
-              <Button small kind="ghost" label="Pictures" onPress={() => setPicturesOf({ type: 'property', id: pg.id, title: pg.name })} />
-              <Button small kind="ghost" label="Extend licence" onPress={() => setExtend(pg)} />
-              <Button small kind={pg.active ? 'danger' : 'ghost'} label={pg.active ? 'Block' : 'Activate'} onPress={() => toggle(pg)} />
+              <Button small kind="ghost" label="Photos" onPress={() => setPicturesOf({ type: 'property', id: pg.id, title: pg.name })} />
+              <Button small kind="ghost" label="Extend License" onPress={() => setExtend(pg)} />
+              <Button
+                small
+                kind={pg.active ? 'danger' : 'ghost'}
+                label={pg.active ? 'Block' : 'Activate'}
+                onPress={() => toggle(pg)}
+              />
             </View>
           </Card>
         );
       })}
+
       {filtered.length > shown && (
-        <Button kind="ghost" label={`Show more (${filtered.length - shown})`} onPress={() => setShown(shown + PAGE)} />
+        <Button
+          kind="ghost"
+          label={`Show more (${filtered.length - shown})`}
+          onPress={() => setShown(shown + PAGE)}
+        />
       )}
 
+      {/* ── Modals ── */}
       <PicturesSheet target={picturesOf} onClose={() => setPicturesOf(null)} />
 
       <AddPropertyModal
@@ -241,6 +413,7 @@ export default function Pgs() {
           }}
         />
       )}
+
       <FormModal
         visible={extend !== null}
         title={`Extend licence · ${extend?.name ?? ''}`}

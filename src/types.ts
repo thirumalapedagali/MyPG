@@ -296,6 +296,57 @@ export type AdminStats = {
   pendingRegistrations: number;
 };
 
+export type AdminAnalytics = {
+  activeUsers24h: number;
+  activeUsers7d: number;
+  activeUsers30d: number;
+  activeOwners24h: number;
+  activeManagers24h: number;
+  activeResidents24h: number;
+
+  totalUsers: number;
+  totalOwners: number;
+  totalManagers: number;
+  totalResidents: number;
+  blockedUsers: number;
+
+  totalPgs: number;
+  activePgs: number;
+  blockedPgs: number;
+  expiredPgs: number;
+  expiringSoonPgs: number;
+  pendingRegistrations: number;
+
+  totalBeds: number;
+  occupiedBeds: number;
+  vacantBeds: number;
+  occupancyRatePercentage: number;
+  totalActiveResidents: number;
+
+  openComplaints: number;
+  inProgressComplaints: number;
+  pendingBookings: number;
+};
+
+export type PropertyUserStats = {
+  pgId: number;
+  pgName: string;
+  city: string | null;
+  ownerName: string | null;
+  active: boolean;
+  totalUsers: number;
+  ownerCount: number;
+  managerCount: number;
+  residentCount: number;
+  active24h: number;
+  active7d: number;
+  active30d: number;
+  totalActiveResidents: number;
+  totalBeds: number;
+  occupiedBeds: number;
+  appAdoptionRatePercentage: number;
+};
+
 export type FeedbackItem = {
   id: number;
   type: 'SUGGESTION' | 'BUG' | 'OTHER';

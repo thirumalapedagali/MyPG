@@ -20,7 +20,10 @@ export default function AdminHome({ navigation }: { navigation?: any }) {
   const go = (screen: string) => navigation?.navigate?.(screen);
   const enter = async (pg: PgInfo) => {
     setPicking(false);
-    await attempt(() => selectPg(pg.id));
+    const ok = await attempt(() => selectPg(pg.id));
+    if (ok && navigation?.canGoBack?.()) {
+      navigation.popToTop();
+    }
   };
 
   return (
@@ -56,6 +59,41 @@ export default function AdminHome({ navigation }: { navigation?: any }) {
               {data.pgs.length === 0 ? 'No PGs yet' : `Choose a PG (${data.pgs.length})…`}
             </Text>
             <Ionicons name="chevron-down" size={18} color={colors.muted} />
+          </Pressable>
+
+          {/* ── App Analytics Card ── */}
+          <Pressable
+            onPress={() => go('AdminAnalytics')}
+            accessibilityRole="button"
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 12,
+              backgroundColor: colors.primary,
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 16,
+            }}
+          >
+            <View
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                backgroundColor: 'rgba(255,255,255,0.2)',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Ionicons name="analytics" size={22} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 15 }}>Active Users & Platform Analytics</Text>
+              <Text style={{ color: '#c7d2fe', fontSize: 12, marginTop: 2 }}>
+                Track DAU/WAU/MAU, user roles, occupancy rate & health
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#fff" />
           </Pressable>
 
           {stats.pendingRegistrations > 0 && (
@@ -98,6 +136,20 @@ export default function AdminHome({ navigation }: { navigation?: any }) {
           <Card>
             <Text style={s.h2}>Quick actions</Text>
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              <Pressable
+                onPress={() => go('AdminAnalytics')}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#e0e7ff', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 }}
+              >
+                <Ionicons name="stats-chart" size={16} color={colors.primary} />
+                <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 13 }}>App Analytics</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => go('PropertyUserStats')}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#dcfce7', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 }}
+              >
+                <Ionicons name="pie-chart" size={16} color={colors.good} />
+                <Text style={{ color: colors.good, fontWeight: '700', fontSize: 13 }}>Property Users</Text>
+              </Pressable>
               <Pressable
                 onPress={() => go('Registrations')}
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#fff3e0', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 }}

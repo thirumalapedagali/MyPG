@@ -1,11 +1,11 @@
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, BackHandler, Platform, StyleSheet, ToastAndroid, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AnimatedSplash from './src/AnimatedSplash';
 import { registerForPush, watchPushToken } from './src/push';
@@ -33,6 +33,8 @@ import Users from './src/screens/Users';
 import Pgs from './src/screens/Pgs';
 import AdminHome from './src/screens/AdminHome';
 import AdminUsers from './src/screens/AdminUsers';
+import AdminAnalytics from './src/screens/AdminAnalytics';
+import PropertyUserStats from './src/screens/PropertyUserStats';
 import Registrations from './src/screens/Registrations';
 import Lookups from './src/screens/Lookups';
 import PropertyCatalog from './src/screens/PropertyCatalog';
@@ -184,6 +186,8 @@ function Root() {
           <Stack.Screen name="AdminHome" component={AdminHome} />
           <Stack.Screen name="Pgs" component={Pgs} />
           <Stack.Screen name="AdminUsers" component={AdminUsers} />
+          <Stack.Screen name="AdminAnalytics" component={AdminAnalytics} />
+          <Stack.Screen name="PropertyUserStats" component={PropertyUserStats} />
           <Stack.Screen name="Registrations" component={Registrations} />
           <Stack.Screen name="Lookups" component={Lookups} />
           <Stack.Screen name="PropertyTypes" component={PropertyTypes} />
@@ -205,6 +209,8 @@ function Root() {
           {user.role !== 'RESIDENT' && <Stack.Screen name="VacateRequests" component={VacateRequests} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Users" component={Users} />}
           {user.role !== 'RESIDENT' && <Stack.Screen name="Pgs" component={Pgs} />}
+          {user.role === 'SUPER_ADMIN' && <Stack.Screen name="AdminAnalytics" component={AdminAnalytics} />}
+          {user.role === 'SUPER_ADMIN' && <Stack.Screen name="PropertyUserStats" component={PropertyUserStats} />}
           <Stack.Screen name="Notifications" component={Notifications} />
         </>
       )}
