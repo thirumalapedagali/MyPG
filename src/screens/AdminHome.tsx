@@ -6,11 +6,13 @@ import { useAuth } from '../auth';
 import { attempt, useResource } from '../hooks';
 import { AdminStats, PgInfo } from '../types';
 import { Card, PickerModal, Screen, Stat, colors, s } from '../ui';
+import { WhatsappSettingsModal } from './Account';
 
 /** Super admin landing page: pick any PG to enter it, or manage PGs and users platform-wide. */
 export default function AdminHome({ navigation }: { navigation?: any }) {
   const { selectPg } = useAuth();
   const [picking, setPicking] = useState(false);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
   const { data, error, loading, refreshing, refresh } = useResource(async () => {
     const [stats, pgs] = await Promise.all([get<AdminStats>('/api/admin/stats'), get<PgInfo[]>('/api/admin/pgs')]);
     return { stats, pgs };
@@ -193,6 +195,13 @@ export default function AdminHome({ navigation }: { navigation?: any }) {
                 <Text style={{ color: colors.warn, fontWeight: '700', fontSize: 13 }}>Amenities & fields</Text>
               </Pressable>
               <Pressable
+                onPress={() => setWhatsappOpen(true)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#dcfce7', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 }}
+              >
+                <Ionicons name="logo-whatsapp" size={16} color="#25a244" />
+                <Text style={{ color: '#25a244', fontWeight: '700', fontSize: 13 }}>WhatsApp</Text>
+              </Pressable>
+              <Pressable
                 onPress={() => go('AdminFeedback')}
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#e0f2fe', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 }}
               >
@@ -202,6 +211,7 @@ export default function AdminHome({ navigation }: { navigation?: any }) {
             </View>
           </Card>
 
+          <WhatsappSettingsModal visible={whatsappOpen} onClose={() => setWhatsappOpen(false)} />
           <PickerModal
             visible={picking}
             title="Open a PG"

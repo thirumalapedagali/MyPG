@@ -25,10 +25,15 @@ export const BASE_URL = resolveBaseUrl();
 export class ApiError extends Error {
   status: number;
   code?: string;
-  constructor(status: number, message: string, code?: string) {
+  /** Only on LICENSE_EXPIRED (402): the signed-in role and the date the subscription ended (YYYY-MM-DD). */
+  role?: string;
+  licenseExpiry?: string;
+  constructor(status: number, message: string, code?: string, extra?: { role?: string; licenseExpiry?: string }) {
     super(message);
     this.status = status;
     this.code = code;
+    this.role = extra?.role;
+    this.licenseExpiry = extra?.licenseExpiry;
   }
 }
 
@@ -51,6 +56,12 @@ export const tokenStore = {
     await AsyncStorage.removeItem(TOKEN_KEY);
   },
 };
+
+let licenseListener: ((info: { role?: string; expiresOn?: string }) => void) | null = null;
+/** The subscription ended while the app was in use: show the renewal popup instead of signing the user out. */
+export function onLicenseExpired(cb: ((info: { role?: string; expiresOn?: string }) => void) | null) {
+  licenseListener = cb;
+}
 
 let expiredListener: (() => void) | null = null;
 /** AuthProvider subscribes so a failed refresh sends the user back to the login screen. */
@@ -132,8 +143,11 @@ async function parse(res: Response): Promise<unknown> {
     json = undefined;
   }
   if (!res.ok) {
-    const err = (json ?? {}) as { message?: string; code?: string };
-    throw new ApiError(res.status, err.message ?? `Request failed (${res.status})`, err.code);
+    const err = (json ?? {}) as { message?: string; code?: string; role?: string; licenseExpiry?: string };
+    if (res.status === 402 && err.code === 'LICENSE_EXPIRED') {
+      licenseListener?.({ role: err.role, expiresOn: err.licenseExpiry });
+    }
+    throw new ApiError(res.status, err.message ?? `Request failed (${res.status})`, err.code, err);
   }
   return json;
 }
@@ -165,8 +179,10 @@ export async function api<T>(path: string, { method = 'GET', body, auth = true }
     try {
       fresh = await refreshToken(token);
     } catch (e) {
+      // An expired subscription keeps the session (the popup was shown by parse): the user renews instead of logging in again.
+      if (e instanceof ApiError && e.status === 402) throw e;
       // Only an explicit rejection ends the session; a network error must not log the user out.
-      if (e instanceof ApiError && [401, 402, 403].includes(e.status)) {
+      if (e instanceof ApiError && [401, 403].includes(e.status)) {
         await expireSession();
         throw new ApiError(401, 'Your session has expired. Please log in again.');
       }

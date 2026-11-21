@@ -17,6 +17,7 @@ import { get, post, put } from '../api';
 import { useAuth } from '../auth';
 import { attempt } from '../hooks';
 import { WhatsappConfig } from '../types';
+import { useSubscription } from '../subscription';
 import { AddPropertyModal, Button, Card, FormModal, HeaderAction, Screen, colors, s } from '../ui';
 
 const ROLE_LABEL = { SUPER_ADMIN: 'Super admin', OWNER: 'Owner', MANAGER: 'Manager', RESIDENT: 'Resident' } as const;
@@ -52,8 +53,11 @@ function ChangePasswordForm({ visible, onClose, onDone }: { visible: boolean; on
   );
 }
 
-/** Modal to configure WhatsApp Cloud API settings and notification preferences. */
-function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+/** Admin-only paths: one WhatsApp configuration that every property uses. */
+const WHATSAPP_PATH = '/api/admin/notification-config/whatsapp';
+
+/** Modal where the super admin sets the common WhatsApp Cloud API settings and notification preferences. */
+export function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -73,7 +77,7 @@ function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose
   useEffect(() => {
     if (!visible) return;
     let active = true;
-    get<WhatsappConfig>('/api/notification-config/whatsapp')
+    get<WhatsappConfig>(WHATSAPP_PATH)
       .then((cfg) => {
         if (!active) return;
         if (cfg) {
@@ -100,7 +104,7 @@ function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose
   const handleSave = async () => {
     setSaving(true);
     const ok = await attempt(() =>
-      put('/api/notification-config/whatsapp', {
+      put(WHATSAPP_PATH, {
         phoneNumberId,
         wabaId,
         apiVersion,
@@ -114,7 +118,7 @@ function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose
     );
     setSaving(false);
     if (ok) {
-      Alert.alert('Saved', 'WhatsApp notification configuration updated successfully.');
+      Alert.alert('Saved', 'The common WhatsApp configuration was updated. Every property uses it.');
       onClose();
     }
   };
@@ -125,7 +129,7 @@ function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose
       return;
     }
     setTesting(true);
-    const ok = await attempt(() => post(`/api/notification-config/whatsapp/test?testPhone=${encodeURIComponent(testPhone.trim())}`));
+    const ok = await attempt(() => post(`${WHATSAPP_PATH}/test?testPhone=${encodeURIComponent(testPhone.trim())}`));
     setTesting(false);
     if (ok) {
       Alert.alert('Test Sent', `Test WhatsApp message sent to ${testPhone.trim()}. Check the recipient's phone.`);
@@ -137,7 +141,7 @@ function WhatsappSettingsModal({ visible, onClose }: { visible: boolean; onClose
       <View style={styles.modalBackdrop}>
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>WhatsApp Notifications</Text>
+            <Text style={styles.modalTitle}>WhatsApp (all properties)</Text>
             <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Text style={{ fontSize: 18, color: colors.muted, fontWeight: '700' }}>âœ•</Text>
             </TouchableOpacity>
@@ -256,9 +260,9 @@ export function MustChangePassword() {
 
 export default function Account() {
   const { user, logout, exitPg } = useAuth();
+  const { openPlans } = useSubscription();
   const nav = useNavigation<NavigationProp<ParamListBase>>();
   const [open, setOpen] = useState(false);
-  const [whatsappOpen, setWhatsappOpen] = useState(false);
   const [pgProfileOpen, setPgProfileOpen] = useState(false);
   if (!user) return null;
 
@@ -277,8 +281,8 @@ export default function Account() {
     tiles.push({ icon: 'business', color: '#2e7d32', title: 'Profile & UPI Settings', sub: 'Update PG details, UPI, billing', onPress: () => setPgProfileOpen(true) });
   if (canManageStaff)
     tiles.push({ icon: 'people', color: '#1565c0', title: 'Manage Users', sub: 'Add, edit & assign roles', onPress: () => nav.navigate('Users') });
-  if (canManagePg)
-    tiles.push({ icon: 'logo-whatsapp', color: '#25a244', title: 'WhatsApp Notifications', sub: 'Send updates & reminders', onPress: () => setWhatsappOpen(true) });
+  if (user.role === 'OWNER' && user.pgId !== null && !user.allProperties)
+    tiles.push({ icon: 'card', color: '#ea580c', title: 'Subscription', sub: 'Plans, renewal & expiry date', onPress: openPlans });
   if (user.role === 'SUPER_ADMIN')
     tiles.push({ icon: 'home', color: '#6a1b9a', title: 'Admin Console', sub: 'Add, edit & manage properties', onPress: () => attempt(() => exitPg()) });
 
@@ -340,7 +344,6 @@ export default function Account() {
         <Text style={acct.logoutText}>Log out</Text>
       </TouchableOpacity>
       <ChangePasswordForm visible={open} onClose={() => setOpen(false)} />
-      <WhatsappSettingsModal visible={whatsappOpen} onClose={() => setWhatsappOpen(false)} />
       <AddPropertyModal editing visible={pgProfileOpen} onClose={() => setPgProfileOpen(false)} onCreated={() => setPgProfileOpen(false)} />
     </Screen>
   );

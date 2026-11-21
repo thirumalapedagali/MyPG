@@ -10,6 +10,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import AnimatedSplash from './src/AnimatedSplash';
 import { registerForPush, watchPushToken } from './src/push';
 import { AuthProvider, useAuth } from './src/auth';
+import { SubscriptionProvider } from './src/subscription';
 import { PropertyRequired, colors } from './src/ui';
 import Dashboard from './src/screens/Dashboard';
 import Today from './src/screens/Today';
@@ -263,10 +264,12 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <NavigationContainer ref={navRef}>
-          <Root />
-          <StatusBar style="dark" />
-        </NavigationContainer>
+        <SubscriptionProvider>
+          <NavigationContainer ref={navRef}>
+            <Root />
+            <StatusBar style="dark" />
+          </NavigationContainer>
+        </SubscriptionProvider>
       </AuthProvider>
       {showSplash && <AnimatedSplash onFinish={onSplashDone} />}
     </SafeAreaProvider>
